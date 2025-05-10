@@ -4,12 +4,21 @@
 
 #include <openssl/sha.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
+
+void base16(const unsigned char *hash, size_t len, char *output) {
+  const char hex[] = "0123456789abcdef";
+  for (size_t i = 0; i < len; ++i) {
+    output[i * 2] = hex[(hash[i] >> 4) & 0xF];
+    output[i * 2 + 1] = hex[hash[i] & 0xF];
+  }
+  output[len * 2] = '\0'; // Null terminator
+}
 
 // Compute Merkle root for all transactions in a block
-// This simple implementation concatenates the sender strings of all transactions
-// :TODO: Implement a proper Merkle tree
+// This simple implementation concatenates the sender strings of all
+// transactions :TODO: Implement a proper Merkle tree
 void compute_merkle_root(Block *block, char *merkle_root) {
   if (!block || !merkle_root) {
     puts("Invalid block or merkle root");
@@ -23,8 +32,10 @@ void compute_merkle_root(Block *block, char *merkle_root) {
 
   char concatenated[4096] = {0};
   for (uint32_t i = 0; i < block->transaction_count; i++) {
-    /*strncat(concatenated, block->transactions[i].sender, sizeof(concatenated) - strlen(concatenated) - 1);*/
-    memcpy(concatenated + strlen(concatenated), block->transactions[i].sender, strlen(block->transactions[i].sender));
+    /*strncat(concatenated, block->transactions[i].sender, sizeof(concatenated)
+     * - strlen(concatenated) - 1);*/
+    memcpy(concatenated + strlen(concatenated), block->transactions[i].sender,
+           strlen(block->transactions[i].sender));
   }
 
   unsigned char hash[SHA256_DIGEST_LENGTH];
@@ -63,13 +74,18 @@ int hash(Block *block) {
   SHA256_Update(&sha256, &block->timestamp, sizeof(block->timestamp));
   SHA256_Update(&sha256, block->previous_hash,
                 strlen((const char *)block->previous_hash));
-  SHA256_Update(&sha256, block->merkle_root, strlen((const char *)block->merkle_root));
+  SHA256_Update(&sha256, block->merkle_root,
+                strlen((const char *)block->merkle_root));
   SHA256_Update(&sha256, &block->nonce, sizeof(block->nonce));
 
-  unsigned char block_hash[SHA256_DIGEST_LENGTH];
-  SHA256_Final(block_hash, &sha256);
+  unsigned char hash_value[SHA256_DIGEST_LENGTH];
+  SHA256_Final(hash_value, &sha256);
 
-  memcpy(block->hash, block_hash, SHA256_DIGEST_LENGTH);
-  
+  // Convert hash to hex string
+  char hash_hex[SHA256_DIGEST_LENGTH * 2 + 1];
+  base16(hash_value, SHA256_DIGEST_LENGTH, hash_hex);
+
+  memcpy(block->hash, hash_hex, SHA256_DIGEST_LENGTH);
+
   return EXIT_SUCCESS;
 }

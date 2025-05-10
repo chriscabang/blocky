@@ -1,4 +1,4 @@
-PROJECT  := cutechain
+PROJECT  := blocky
 VERSION  := 0.1
 # export MallocStackLogging=1
 # leaks --atExit --leak-check=full --track-origins=yes
@@ -23,6 +23,7 @@ CC       := gcc
 CFLAGS   += -pedantic -Wall -Wextra -march=native
 CFLAGS   += -I/usr/local/include
 CFLAGS   += -I/opt/homebrew/include
+CFLAGS   += -fmacro-prefix-map=$(ROOT)=.
 CFLAGS   += -I$(INCLUDE)
 CFLAGS   += -I$(LIBS)/liboqs/build/include
 
@@ -42,9 +43,9 @@ $(CC): prerequisites
 	@echo "Compiling $(PROJECT) version $(VERSION)..."
 
 # Build the main blockchain executable
-all: prerequisites cutechain
+all: prerequisites blocky
 
-cutechain: $(OBJ) $(MAIN)
+blocky: $(OBJ) $(MAIN)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD)/$@ $^
 
 %.o: %.c

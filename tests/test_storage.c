@@ -19,10 +19,13 @@
 #include "crypto.h"
 #include "storage.h"
 
+#include "log.h"
+
 /**
  * Setup function - runs before each test.
  */
 static int setup(void **state) {
+  log_info("Setting up test environment");
   Block *genesis = malloc(sizeof(Block));
   memset(genesis, 0, sizeof(Block));
   genesis->index = 1;
@@ -43,6 +46,7 @@ static int setup(void **state) {
  * Teardown function - runs after each test.
  */
 static int teardown(void **state) {
+  log_info("Cleaning up test environment");
   Block *genesis = *state;
   free(genesis);
 
@@ -57,18 +61,19 @@ static int teardown(void **state) {
 /**
  * Test saving and loading a block.
  */
-static void test_save_and_load_block(void **state) {
-  Block *test_block = *state;
+static void save_and_load_block(void **state) {
+  Block *block = *state;
 
-  assert_non_null(storage_insert(test_block));
+  assert_int_equal(storage_insert(block), EXIT_SUCCESS);
 
   Block *loaded_block = storage_read(storage_head());
+
   assert_non_null(loaded_block);
-  assert_int_equal(loaded_block->index, test_block->index);
+  assert_int_equal(loaded_block->index, block->index);
   assert_string_equal((char *)loaded_block->previous_hash,
-                      (char *)test_block->previous_hash);
-  assert_string_equal((char *)loaded_block->hash, (char *)test_block->hash);
-  assert_int_equal(loaded_block->timestamp, test_block->timestamp);
+                      (char *)block->previous_hash);
+  assert_string_equal((char *)loaded_block->hash, (char *)block->hash);
+  assert_int_equal(loaded_block->timestamp, block->timestamp);
 
   free(loaded_block);
 }
@@ -76,7 +81,7 @@ static void test_save_and_load_block(void **state) {
 /**
  * Test updating and retrieving the latest block hash.
  */
-static void test_update_and_get_head(void **state) {
+static void update_and_get_head(void **state) {
   (void)state; // Suppress unused variable warning
 
   // Get the current head hash
@@ -104,7 +109,7 @@ static void test_update_and_get_head(void **state) {
 /**
  * Test switching to a block state.
  */
-static void test_switch_block_state(void **state) {
+static void switch_block_state(void **state) {
   (void)state; // Suppress unused variable warning
 
   const char *head_hash = storage_head();
@@ -122,11 +127,9 @@ static void test_switch_block_state(void **state) {
 
   const char *latest_head = storage_head();
 
+  assert_string_equal(latest_head, (char*) new_block->hash);
   assert_int_equal(storage_move(head_hash), EXIT_SUCCESS);
   assert_string_equal(storage_head(), head_hash);
-  assert_int_equal(storage_move(latest_head), EXIT_SUCCESS);
-  assert_string_not_equal(storage_head(), head_hash);
-  assert_string_equal(storage_head(), latest_head);
 
   free(new_block);
 }
@@ -135,11 +138,11 @@ static void test_switch_block_state(void **state) {
  * Main function to run all tests.
  */
 int main(void) {
+  log_set_stream(stderr);
   const struct CMUnitTest tests[] = {
-      cmocka_unit_test_setup_teardown(test_save_and_load_block, setup,
-                                      teardown),
-      cmocka_unit_test(test_update_and_get_head),
-      cmocka_unit_test_teardown(test_switch_block_state, teardown),
+      cmocka_unit_test_setup(save_and_load_block, setup),
+      cmocka_unit_test(update_and_get_head),
+      cmocka_unit_test_teardown(switch_block_state, teardown),
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);

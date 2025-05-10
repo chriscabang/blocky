@@ -5,10 +5,10 @@
 /*#include "crypto.h"*/
 #include "log.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 
 // :TODO: Implement cross-platform compatibility
 #ifdef _WIN32
@@ -20,9 +20,9 @@
 
 // Directory paths for block storage
 #define STORAGE_DIR ".chain/"
-#define BLOCKS_DIR  ".chain/blocks/"
-#define HEAD_FILE   ".chain/HEAD"
-#define REFS_DIR    ".chain/refs/"
+#define BLOCKS_DIR ".chain/blocks/"
+#define HEAD_FILE ".chain/HEAD"
+#define REFS_DIR ".chain/refs/"
 
 #define HASH_SIZE 65 // SHA-256 hash size + null terminator
 
@@ -35,13 +35,17 @@ static void init(void) {
 
   int status = 0;
   do {
-    if ((status = mkdir(STORAGE_DIR, 0755)) == -1 && errno != EEXIST) break;
-    if ((status = mkdir(BLOCKS_DIR, 0755)) == -1 && errno != EEXIST) break;
-    if ((status = mkdir(REFS_DIR, 0755)) == -1 && errno != EEXIST) break;
+    if ((status = mkdir(STORAGE_DIR, 0755)) == -1)
+      break;
+    if ((status = mkdir(BLOCKS_DIR, 0755)) == -1)
+      break;
+    if ((status = mkdir(REFS_DIR, 0755)) == -1)
+      break;
   } while (0);
 
-  if (status == -1) {
-    log_error("Error creating storage directories: %s", strerror(errno));
+  if (status == -1 && errno != EEXIST) {
+    log_error("Error creating storage directories: (%d) %s", errno,
+              strerror(errno));
     exit(EXIT_FAILURE);
   }
 }
@@ -53,7 +57,7 @@ static void init(void) {
  * @param hash: The hash of the latest block.
  * @return EXIT_SUCCESS if successful, EXIT_FAILURE otherwise.
  */
-static int update_head(const char* hash) {
+static int update_head(const char *hash) {
   log_debug("Updating head");
   FILE *file = fopen(HEAD_FILE, "w");
   if (file == NULL) {
@@ -61,6 +65,7 @@ static int update_head(const char* hash) {
     return EXIT_FAILURE;
   }
   fprintf(file, "%s", hash);
+  fclose(file);
   log_debug("Head updated to %s", hash);
   return EXIT_SUCCESS;
 }
@@ -72,7 +77,7 @@ static int update_head(const char* hash) {
  * @param block: The block to save.
  * @return EXIT_SUCCESS if successful, EXIT_FAILURE otherwise.
  */
-int storage_insert(const Block* block) {
+int storage_insert(const Block *block) {
   init();
 
   // Check if block is not NULL
@@ -82,7 +87,7 @@ int storage_insert(const Block* block) {
   }
 
   // Check if block hash is not NULL
-  const char *hash = (const char*) block->hash;
+  const char *hash = (const char *)block->hash;
   if (hash == NULL) {
     log_error("Cannot insert block with NULL hash");
     return EXIT_FAILURE;
@@ -98,7 +103,7 @@ int storage_insert(const Block* block) {
     log_error("Error saving block");
     return EXIT_FAILURE;
   }
-  
+
   log_info("Writing block to storage");
 
   fwrite(block, sizeof(Block), 1, file);
@@ -123,7 +128,7 @@ int storage_insert(const Block* block) {
  * @param hash: The hash of the block to load.
  * @return The block information, or NULL if the block could not be loaded.
  */
-Block* storage_read(const char *hash) {
+Block *storage_read(const char *hash) {
   char path[256];
   snprintf(path, sizeof(path), "%s%s", BLOCKS_DIR, hash);
 
@@ -152,7 +157,7 @@ Block* storage_read(const char *hash) {
  * @return EXIT_SUCCESS if successful, EXIT_FAILURE otherwise.
  */
 int storage_move(const char *hash) {
-  const char* head_hash = storage_head();
+  const char *head_hash = storage_head();
 
   log_info("Moving block %s to head", hash);
 
@@ -168,7 +173,7 @@ int storage_move(const char *hash) {
  *
  * @return The head block of the current blockchain.
  */
-const char* storage_head(void) {
+const char *storage_head(void) {
   FILE *file = fopen(HEAD_FILE, "r");
   log_info("Reading head block reference");
   if (file == NULL) {
@@ -176,7 +181,7 @@ const char* storage_head(void) {
     return NULL;
   }
 
-  char *hash = (char *) malloc(HASH_SIZE);
+  char *hash = (char *)malloc(HASH_SIZE);
   memset(hash, 0, HASH_SIZE);
   fgets(hash, HASH_SIZE, file);
   fclose(file);
@@ -195,14 +200,14 @@ const char* storage_head(void) {
  * @param count: Number of blocks to read, return the actual number read.
  * @return An array of block hashes.
  */
-char** storage_scan(unsigned int offset, unsigned int* count) {
+char **storage_scan(unsigned int offset, unsigned int *count) {
   if (!count) {
     return NULL;
   }
 
   unsigned int max = *count;
   unsigned int actual = 0;
-  const char* head_hash = storage_head();
+  const char *head_hash = storage_head();
   if (memcmp(head_hash, "0", 1) == 0) {
     return NULL;
   }
@@ -210,32 +215,32 @@ char** storage_scan(unsigned int offset, unsigned int* count) {
   char current_hash[HASH_SIZE];
   memcpy(current_hash, head_hash, HASH_SIZE);
   for (unsigned int i = 0; i < offset; i++) {
-    Block* block = storage_read(current_hash);
+    Block *block = storage_read(current_hash);
     if (!block) {
       break;
     }
     if (memcmp(block->previous_hash, "0", 1) == 0) {
-      free (block);
+      free(block);
       break;
     }
     memcpy(current_hash, block->previous_hash, HASH_SIZE);
-    free (block);
+    free(block);
   }
 
-  char** scans = malloc(max * sizeof(char*));
+  char **scans = malloc(max * sizeof(char *));
   while (actual < max) {
-    Block* block = storage_read(current_hash);
+    Block *block = storage_read(current_hash);
     if (!block) {
       break;
     }
     scans[actual] = malloc(HASH_SIZE);
     memcpy(scans[actual], current_hash, HASH_SIZE);
     if (memcmp(block->previous_hash, "0", 1) == 0) {
-      free (block);
+      free(block);
       break;
     }
     memcpy(current_hash, block->previous_hash, HASH_SIZE);
-    free (block);
+    free(block);
     actual++;
   }
 

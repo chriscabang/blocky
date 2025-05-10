@@ -23,7 +23,7 @@
 #define TEST_LOG_FILE "test_output.log"
 
 /* Test logging to terminal */
-static void test_log_to_terminal(void **state) {
+static void log_to_terminal(void **state) {
   (void) state; // Suppress unused variable warning
 
   // Create a pipe to capture the output
@@ -71,7 +71,7 @@ static void test_log_to_terminal(void **state) {
 }
 
 /* Test logging to file */
-static void test_log_to_file(void **state) {
+static void log_to_file(void **state) {
   (void)state; // Suppress unused variable warning
 
   // Create a mock stream to write to a file
@@ -108,8 +108,8 @@ static void test_log_to_file(void **state) {
 int main(void) {
   // List of tests to run
   const struct CMUnitTest tests[] = {
-      cmocka_unit_test(test_log_to_terminal),
-      cmocka_unit_test(test_log_to_file),
+      cmocka_unit_test(log_to_terminal),
+      cmocka_unit_test(log_to_file),
   };
 
   // Run the tests as a group
