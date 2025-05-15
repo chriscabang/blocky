@@ -25,7 +25,6 @@
  * Setup function - runs before each test.
  */
 static int setup(void **state) {
-  log_info("Setting up test environment");
   Block *genesis = malloc(sizeof(Block));
   memset(genesis, 0, sizeof(Block));
   genesis->index = 1;
@@ -46,7 +45,6 @@ static int setup(void **state) {
  * Teardown function - runs after each test.
  */
 static int teardown(void **state) {
-  log_info("Cleaning up test environment");
   Block *genesis = *state;
   free(genesis);
 
@@ -82,7 +80,7 @@ static void save_and_load_block(void **state) {
  * Test updating and retrieving the latest block hash.
  */
 static void update_and_get_head(void **state) {
-  (void)state; // Suppress unused variable warning
+  (void) state; // Suppress unused variable warning
 
   // Get the current head hash
   const char *head_hash = storage_head();
@@ -110,7 +108,7 @@ static void update_and_get_head(void **state) {
  * Test switching to a block state.
  */
 static void switch_block_state(void **state) {
-  (void)state; // Suppress unused variable warning
+  (void) state; // Suppress unused variable warning
 
   const char *head_hash = storage_head();
 
@@ -135,6 +133,41 @@ static void switch_block_state(void **state) {
 }
 
 /**
+ * Test scanning blocks.
+ */
+static void scan_blocks(void **state) {
+  (void) state; // Suppress unused variable warning
+
+  // Create multiple blocks, do a loop to insert them
+  for (int i = 2; i < 5; i++) {
+    Block *block = malloc(sizeof(Block));
+    memset(block, 0, sizeof(Block));
+    block->index = i;
+    memset(block->transactions, '0', sizeof(block->transactions));
+    block->timestamp = 1800000000 + i;
+    block->transaction_count = i*i;
+
+    assert_int_equal(hash(block), EXIT_SUCCESS);
+    assert_int_equal(storage_insert(block), EXIT_SUCCESS);
+
+    free(block);
+  }
+
+  // Scan the blocks, store the returned block hashes so we can check them
+  unsigned int count = 3;
+  char **blocks = storage_scan(0, &count);
+
+  // Block count should be 3 or more
+  assert_int_not_equal(count, 0);
+
+
+  // Dealocate the blocks
+  for (unsigned int i = 0; i < count; i++) {
+    free(blocks[i]);
+  }
+}
+
+/**
  * Main function to run all tests.
  */
 int main(void) {
@@ -142,7 +175,8 @@ int main(void) {
   const struct CMUnitTest tests[] = {
       cmocka_unit_test_setup(save_and_load_block, setup),
       cmocka_unit_test(update_and_get_head),
-      cmocka_unit_test_teardown(switch_block_state, teardown),
+      cmocka_unit_test(switch_block_state),
+      cmocka_unit_test_teardown(scan_blocks, teardown),
   };
 
   return cmocka_run_group_tests(tests, NULL, NULL);

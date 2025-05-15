@@ -1,5 +1,12 @@
-/* storage.c */
-// Implements block storage and retrieval functions
+/**
+ * @file storage.c
+ * @brief Storage management for the blockchain.
+ *
+ * This file contains functions to initialize storage directories, insert,
+ * read, and manage blocks in the blockchain.
+ */
+
+// :TODO: Implement cross-platform compatibility
 
 #include "storage.h"
 /*#include "crypto.h"*/
@@ -10,7 +17,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-// :TODO: Implement cross-platform compatibility
 #ifdef _WIN32
 #include <direct.h>
 #define mkdir(path, mode) _mkdir(path)
@@ -207,6 +213,7 @@ char **storage_scan(unsigned int offset, unsigned int *count) {
 
   unsigned int max = *count;
   unsigned int actual = 0;
+
   const char *head_hash = storage_head();
   if (memcmp(head_hash, "0", 1) == 0) {
     return NULL;
