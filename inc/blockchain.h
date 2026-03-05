@@ -30,28 +30,29 @@
 #ifndef BLOCKCHAIN_H
 #define BLOCKCHAIN_H
 
-#include "transaction.h"
+// #include "transaction.h"
+#include "block.h"
 
 #include <time.h>
 
 #define MAX_TRANSACTIONS 10
 
-typedef struct Block {
-  /*Header*/
-  uint32_t index;                  // Block number
-  time_t timestamp;                // Block creation time
-  unsigned char previous_hash[65]; // Hash of the previous block
-  unsigned char merkle_root[65];   // Merkle tree root hash
-  uint32_t nonce;                  // Proof of work counter
-  uint8_t consensus;               // Consensus algorithm (0 for PoW, 1 for PoS)
-  unsigned char hash[65];          // Block hash
-
-  /*Content*/
-  Transaction transactions[MAX_TRANSACTIONS]; // List of transactions
-  uint32_t transaction_count;                 // Number of transactions
-
-  struct Block *next; // Pointer to the next block
-} Block;
+// typedef struct Block {
+//   /*Header*/
+//   uint32_t index;                  // Block number
+//   time_t timestamp;                // Block creation time
+//   unsigned char previous_hash[65]; // Hash of the previous block
+//   unsigned char merkle_root[65];   // Merkle tree root hash
+//   uint32_t nonce;                  // Proof of work counter
+//   uint8_t consensus;               // Consensus algorithm (0 for PoW, 1 for PoS)
+//   unsigned char hash[65];          // Block hash
+// 
+//   /*Content*/
+//   Transaction transactions[MAX_TRANSACTIONS]; // List of transactions
+//   uint32_t transaction_count;                 // Number of transactions
+// 
+//   struct Block *next; // Pointer to the next block
+// } Block;
 
 /**
  * @brief Load the blockchain from storage.
