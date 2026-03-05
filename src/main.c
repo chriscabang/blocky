@@ -13,8 +13,8 @@
 #include "storage.h"
 #include "transaction.h"
 
-#define VERSION_STRING "blocky 0.1"
-#define STAGED_PATH    ".chain/STAGED"
+#define VERSION_STRING  "blocky 0.1"
+#define STAGED_PATH     ".chain/STAGED"
 
 /* ── forward declarations ─────────────────────────────────────────────── */
 
@@ -159,7 +159,7 @@ static int cmd_show(int argc, char **argv)
         printf("    [%u] %s -> %s  %.6f\n", i,
                b->transactions[i].sender,
                b->transactions[i].recipient,
-               b->transactions[i].amount);
+               (double)b->transactions[i].amount / (double)MICRO_PER_TOKEN);
     }
     free(b);
     return 0;
@@ -186,10 +186,10 @@ static int cmd_cat(int argc, char **argv)
            b->consensus == 0 ? "PoW" : "PoS");
     printf("txns:      %u\n",  b->transaction_count);
     for (uint32_t i = 0; i < b->transaction_count; i++) {
-        printf("  [%u] %s -> %s  %f\n", i,
+        printf("  [%u] %s -> %s  %.6f\n", i,
                b->transactions[i].sender,
                b->transactions[i].recipient,
-               b->transactions[i].amount);
+               (double)b->transactions[i].amount / (double)MICRO_PER_TOKEN);
     }
     free(b);
     return 0;
@@ -235,8 +235,10 @@ static int cmd_send(int argc, char **argv)
         return 1;
     }
 
-    double amt = atof(amount);
-    if (amt <= 0.0) {
+    /* Accept decimal input (e.g. "10.5") and convert to micro-units. */
+    double amt_d = atof(amount);
+    uint64_t amt_u = (uint64_t)(amt_d * (double)MICRO_PER_TOKEN + 0.5);
+    if (amt_u == 0) {
         fprintf(stderr, "error: amount must be positive\n");
         return 1;
     }
@@ -262,10 +264,11 @@ static int cmd_send(int argc, char **argv)
         fprintf(stderr, "error: cannot open staging file\n");
         return 2;
     }
-    fprintf(f, "%s\t%s\t%f\n", from, to, amt);
+    fprintf(f, "%s\t%s\t%llu\n", from, to, (unsigned long long)amt_u);
     fclose(f);
 
-    printf("Staged: %s -> %s  %.6f\n", from, to, amt);
+    printf("Staged: %s -> %s  %.6f\n", from, to,
+           (double)amt_u / (double)MICRO_PER_TOKEN);
     return 0;
 }
 
@@ -306,7 +309,7 @@ static int cmd_commit(int argc, char **argv)
         memset(&txns[count], 0, sizeof(Transaction));
         strncpy(txns[count].sender,    line,      sizeof(txns[count].sender)    - 1);
         strncpy(txns[count].recipient, tab1 + 1,  sizeof(txns[count].recipient) - 1);
-        txns[count].amount = atof(tab2 + 1);
+        txns[count].amount = (uint64_t)strtoull(tab2 + 1, NULL, 10);
         count++;
     }
     fclose(f);

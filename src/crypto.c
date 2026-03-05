@@ -53,6 +53,7 @@ void compute_merkle_root(Block *block, char *merkle_root) {
         sha256_update(&ctx, tx->sender,    strlen(tx->sender));
         sha256_update(&ctx, tx->recipient, strlen(tx->recipient));
         sha256_update(&ctx, &tx->amount,   sizeof(tx->amount));
+        sha256_update(&ctx, &tx->nonce,    sizeof(tx->nonce));
     }
 
     uint8_t digest[SHA256_DIGEST_LEN];

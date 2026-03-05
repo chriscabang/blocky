@@ -107,10 +107,10 @@ int chain_validate(const Chain *c, const Block *block) {
     return EXIT_FAILURE;
   }
 
-  /* Transaction amounts must be positive */
+  /* Transaction amounts must be non-zero (uint64_t cannot be negative) */
   for (uint32_t i = 0; i < block->transaction_count; i++) {
-    if (block->transactions[i].amount <= 0.0) {
-      log_error("chain_validate: invalid transaction amount in block %u", block->index);
+    if (block->transactions[i].amount == 0) {
+      log_error("chain_validate: zero transaction amount in block %u", block->index);
       return EXIT_FAILURE;
     }
   }

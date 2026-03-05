@@ -277,7 +277,7 @@ static void test_merkle_with_transactions(void **state) {
     b.transaction_count = 1;
     strncpy(b.transactions[0].sender,    "alice", 5);
     strncpy(b.transactions[0].recipient, "bob",   3);
-    b.transactions[0].amount = 42.0;
+    b.transactions[0].amount = 42000000ULL; /* 42 tokens in micro-units */
 
     char root[HASH_SIZE];
     compute_merkle_root(&b, root);
@@ -296,8 +296,8 @@ static void test_merkle_different_amounts_differ(void **state) {
     strncpy(a.transactions[0].recipient, "bob",   3);
     strncpy(b.transactions[0].sender,    "alice", 5);
     strncpy(b.transactions[0].recipient, "bob",   3);
-    a.transactions[0].amount = 10.0;
-    b.transactions[0].amount = 20.0;
+    a.transactions[0].amount = 10000000ULL; /* 10 tokens in micro-units */
+    b.transactions[0].amount = 20000000ULL; /* 20 tokens in micro-units */
 
     char root_a[HASH_SIZE], root_b[HASH_SIZE];
     compute_merkle_root(&a, root_a);
