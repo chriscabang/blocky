@@ -597,3 +597,112 @@ void sha256_digest(const void *data, size_t len, uint8_t out[SHA256_DIGEST_LEN])
 The `vs_openssl` group uses OpenSSL as a reference oracle (suppressing deprecation warnings with pragma guards). The 55-byte and 56-byte tests specifically exercise the two padding paths in `sha256_final`.
 
 ---
+
+## ADR-009: Transaction Module — Dilithium-Correct Sizes, Integer Amounts, Replay Protection
+
+**Date:** 2026-03
+**Status:** Adopted
+**Files:** `inc/transaction.h`, `src/transaction.c`, `src/chain.c`, `src/crypto.c`, `src/main.c`, `tests/test_crypto.c`
+
+### Context — Issues Found in Original transaction.h / transaction.c
+
+A review of the transaction module found the following bugs and deficiencies:
+
+| Issue | Severity | Detail |
+|---|---|---|
+| `MAX_SIGNATURE_LENGTH 512` too small | Critical | Dilithium-3 signatures are 3293 bytes. Storing one would silently overflow the field. |
+| `MAX_PUBLIC_KEY_LENGTH 1024` too small | Critical | Dilithium-3 public keys are 1952 bytes. Same overflow risk. |
+| `double amount` for financial values | High | Floating-point arithmetic is non-deterministic across platforms. Two nodes could hash the same transaction to different values. |
+| No replay protection | High | A signed transaction could be rebroadcast indefinitely — there was no per-sender sequence number. |
+| `sign_transaction` returned `void` | High | OQS failures were silently swallowed. Callers had no way to detect a signing failure. |
+| `verify_transaction` return inverted | High | Returned `1` on success and `0` on failure — opposite of `EXIT_SUCCESS`/`EXIT_FAILURE` convention used everywhere else. |
+| VLA for a compile-time-constant size | Medium | `uint8_t message[sizeof(sender)+...]` produced a VLA despite all operands being constants. Illegal in C99 `_Static_assert` context and non-portable. |
+| `printf` instead of `log_error` | Low | Error messages bypassed the logging framework and always went to stdout. |
+| No compile-time size guard | Low | Mismatches between `MAX_SIGNATURE_LENGTH` and the actual OQS constant would only be caught at runtime (memory corruption). |
+
+### Decision — Updated Constants and Type
+
+```c
+#define MAX_PUBLIC_KEY_LENGTH  1952          /* Dilithium-3 public key  */
+#define MAX_SIGNATURE_LENGTH   3293          /* Dilithium-3 signature   */
+#define MICRO_PER_TOKEN        1000000ULL    /* 1 token = 1,000,000 µ   */
+#define TX_MESSAGE_LEN  (MAX_PUBLIC_KEY_LENGTH * 2 + sizeof(uint64_t) * 2)
+```
+
+`amount` is stored as a `uint64_t` in **micro-units** (one millionth of a token). This is the same convention used by Bitcoin (satoshis) and the Lightning Network. It makes all hashing and comparison operations on amounts bitwise-identical across platforms.
+
+A `uint64_t nonce` field is added for **replay protection**. The nonce is a per-sender sequence number that must increase monotonically. A transaction with a reused nonce is invalid. The nonce is included in the signed message and in the Merkle root so it cannot be stripped by an intermediary.
+
+### Decision — Updated Transaction Struct
+
+```c
+typedef struct {
+    char     sender[MAX_PUBLIC_KEY_LENGTH];     /* Dilithium-3 public key or label */
+    char     recipient[MAX_PUBLIC_KEY_LENGTH];  /* Dilithium-3 public key or label */
+    uint64_t amount;                            /* micro-units (MICRO_PER_TOKEN) */
+    uint64_t nonce;                             /* per-sender sequence number */
+    uint8_t  signature[MAX_SIGNATURE_LENGTH];
+    size_t   signature_length;
+} Transaction;
+```
+
+### Decision — sign_transaction Returns int
+
+`sign_transaction` now returns `int` (`EXIT_SUCCESS` / `EXIT_FAILURE`). This aligns with every other function in the codebase that can fail. Callers can propagate or log the error.
+
+`verify_transaction` return convention is corrected: `EXIT_SUCCESS` on valid signature, `EXIT_FAILURE` otherwise.
+
+### Decision — build_message Helper
+
+A static `build_message()` helper constructs the canonical message for sign/verify:
+
+```
+sender[MAX_PUBLIC_KEY_LENGTH] | recipient[MAX_PUBLIC_KEY_LENGTH] | amount(8B) | nonce(8B)
+```
+
+Using **fixed-width fields** (not `strlen`) guarantees that the message length is constant regardless of label content. Both `sign_transaction` and `verify_transaction` call `build_message` — they always hash the same bytes for the same struct state.
+
+### Decision — _Static_assert Guard
+
+```c
+#if defined(OQS_SIG_dilithium_3_length_signature)
+_Static_assert(MAX_SIGNATURE_LENGTH >= OQS_SIG_dilithium_3_length_signature,
+               "MAX_SIGNATURE_LENGTH too small for Dilithium-3");
+#endif
+```
+
+This catches a size mismatch at compile time rather than at runtime (memory corruption). The guard is conditional so the file compiles when `liboqs` is absent.
+
+### Decision — Nonce in Merkle Root
+
+`compute_merkle_root` (in `crypto.c`) feeds `tx->nonce` into the SHA-256 hash for each transaction. Without this, a valid transaction could have its nonce stripped and remain undetected.
+
+### On-Disk Format Break
+
+These changes increase `sizeof(Transaction)` and therefore `sizeof(Block)`. Any `.chain/` directory created before this change holds binary files in the old format and is incompatible. Existing `.chain/` directories must be deleted and re-initialised.
+
+This is an intentional, one-time break. The Makefile requires `make clean` before `make test` any time a header that affects `sizeof(Block)` changes, because the Makefile does not yet generate automatic header dependency rules (there is no `-MMD -MP` flag). Tracking this as a known limitation: any change to `transaction.h` or `block.h` requires `make clean` to avoid stale objects.
+
+### Rationale
+
+| Decision | Reason |
+|---|---|
+| `uint64_t amount` (micro-units) | Platform-independent bitwise representation; standard convention (Bitcoin, Lightning) |
+| `uint64_t nonce` | Necessary for replay protection before Dilithium signing is wired in |
+| Fixed-width `build_message` | Sign and verify always agree on the message bytes regardless of field content |
+| `_Static_assert` | Catches size regressions at compile time, not at runtime |
+| `int` return from `sign_transaction` | Consistent with every other fallible function in the codebase |
+| `log_error` instead of `printf` | All error output should go through the logging framework for stream control |
+
+### Files Changed
+
+| File | Change |
+|---|---|
+| `inc/transaction.h` | New constants, `uint64_t amount/nonce`, `TX_MESSAGE_LEN`, `int sign_transaction` |
+| `src/transaction.c` | `build_message()`, fixed-size buffer, corrected returns, `log_error`, `_Static_assert` |
+| `src/chain.c` | `amount == 0` guard (was `<= 0.0` on a double) |
+| `src/crypto.c` | Added `sha256_update(&ctx, &tx->nonce, sizeof(tx->nonce))` in `compute_merkle_root` |
+| `src/main.c` | `atof` → `uint64_t` micro-unit conversion; STAGED format uses integer amounts; display with `MICRO_PER_TOKEN` divisor |
+| `tests/test_crypto.c` | Test amounts converted to ULL micro-units (e.g. `42.0` → `42000000ULL`) |
+
+---
