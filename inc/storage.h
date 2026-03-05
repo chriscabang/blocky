@@ -105,4 +105,16 @@ int    storage_checkout(const char *hash);
  */
 char **storage_scan(unsigned int offset, unsigned int *count);
 
+/**
+ * @brief Read a block from the object store directly into a caller-provided buffer.
+ *
+ * Like storage_read() but avoids a malloc — useful for filling pool slots.
+ * Sets out->next = NULL after reading.
+ *
+ * @param hash  Hex hash string identifying the block.
+ * @param out   Caller-provided Block buffer to fill.
+ * @return EXIT_SUCCESS or EXIT_FAILURE.
+ */
+int storage_read_into(const char *hash, Block *out);
+
 #endif /* STORAGE_H */

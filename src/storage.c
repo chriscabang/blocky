@@ -128,7 +128,11 @@ int storage_insert(const Block *block) {
     return EXIT_FAILURE;
   }
 
-  size_t written = fwrite(block, sizeof(Block), 1, file);
+  /* Write a copy with next zeroed — runtime pointer must not reach disk */
+  Block copy = *block;
+  copy.next  = NULL;
+
+  size_t written = fwrite(&copy, sizeof(Block), 1, file);
   fflush(file);
   fsync(fileno(file));
   fclose(file);
@@ -174,7 +178,35 @@ Block *storage_read(const char *hash) {
     return NULL;
   }
 
+  block->next = NULL; /* runtime-only: never trust what was on disk */
   return block;
+}
+
+int storage_read_into(const char *hash, Block *out) {
+  if (!hash || hash[0] == '\0' || !out) {
+    log_error("storage_read_into: invalid arguments");
+    return EXIT_FAILURE;
+  }
+
+  char path[PATH_BUF];
+  snprintf(path, sizeof(path), "%s%s", BLOCKS_DIR, hash);
+
+  FILE *file = fopen(path, "rb");
+  if (!file) {
+    log_error("storage_read_into: block not found: %s", hash);
+    return EXIT_FAILURE;
+  }
+
+  size_t n = fread(out, sizeof(Block), 1, file);
+  fclose(file);
+
+  if (n != 1) {
+    log_error("storage_read_into: short read for block %s", hash);
+    return EXIT_FAILURE;
+  }
+
+  out->next = NULL; /* runtime-only: never trust what was on disk */
+  return EXIT_SUCCESS;
 }
 
 int storage_exists(const char *hash) {
