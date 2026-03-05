@@ -433,6 +433,87 @@ typedef struct {
 
 ---
 
+## ADR-008: CLI Design — Git-Like Command Dispatcher in `main.c`
+
+**Date:** 2026-03
+**Status:** Adopted
+**Files:** `src/main.c`
+
+### Context
+
+`main.c` was a placeholder that checked argument count and printed a version string. The chain API (`chain.h`, `block.h`, `storage.h`, `crypto.h`) was fully implemented and tested. A user-facing CLI was needed to expose it.
+
+The design goals were:
+- Mirror git's UX (subcommand dispatch, familiar flag names)
+- Two-step transaction flow: `send` stages, `commit` builds the block (like `git add` + `git commit`)
+- No new source files or headers — `main.c` only
+- Clean separation: user-facing output to stdout, operational logs to stderr via `log_*`
+
+### Decision — Command Set
+
+| Command | Behaviour |
+|---|---|
+| `init` | `chain_load()` → creates genesis if first run; prints tip |
+| `status` | Prints chain tip + count of staged transactions |
+| `log [--limit N]` | `storage_scan` + one-liner per block (default 10) |
+| `show <hash>` | Formatted block fields to stdout |
+| `cat <hash>` | Raw field dump (all fields, including PoW/PoS label) |
+| `verify <hash>` | `block_verify_hash()` → prints `OK` or `FAIL` |
+| `send --from <s> --to <r> --amount <a>` | Appends one line to `.chain/STAGED` |
+| `commit` | Reads STAGED → `block_create` → `compute_merkle_root` → `chain_add` → unlinks STAGED |
+| `propose` | Stub; prints "not yet implemented" |
+| `version` | Prints version string, no chain load |
+| `help [command]` | Usage summary or per-command help |
+
+Exit codes: `0` success · `1` usage/argument error · `2` chain/storage runtime error.
+
+### Decision — Staging Area
+
+Transactions are staged in `.chain/STAGED`, a tab-separated text file:
+
+```
+alice\tbob\t10.000000\n
+alice\tcarol\t5.000000\n
+```
+
+- `send` appends one line and enforces the `MAX_TRANSACTIONS` (10) cap.
+- `commit` parses all lines, builds the block, then `unlink`s the file.
+- `status` counts newlines in the file to report pending transactions.
+- `.chain/` is created by `chain_load()`, which `send` and `commit` call first, so the directory always exists before STAGED is opened.
+
+The staging file is a runtime artefact — it is never committed to git and is removed by `make clean` (which deletes `.chain/`).
+
+### Decision — Dispatch Table
+
+```c
+typedef struct { const char *name; int (*fn)(int, char **); } Cmd;
+static const Cmd CMDS[] = { ... };
+```
+
+`main()` iterates the table with `strcmp` and calls the matching handler with the full `argc`/`argv`. Each handler does its own flag parsing. Unknown commands print an error and return 1.
+
+### Design Trade-offs
+
+**Two-step `send` + `commit` vs single `transfer` command.**
+A single command would be simpler but loses the ability to batch multiple transactions into one block. The two-step model is consistent with ADR-001's git analogy and is how every real blockchain wallet works.
+
+**`--from`/`--to` accept plain name strings.**
+For now, sender and recipient are stored as-is in `Transaction.sender`/`.recipient` (both `char[1024]`). When Dilithium signing is wired in (ADR-003), these fields will hold public keys. The field size already accommodates a PQC public key — the label strings used now are a temporary convenience.
+
+**`chain_info()`/`chain_list()`/`chain_show()` are not used by the CLI.**
+Those functions output via `log_info` (stderr) and were designed as internal diagnostic aids. The CLI commands (`status`, `log`, `show`) re-implement output with `printf` to stdout for proper UX. The chain API functions are retained for programmatic/debug use.
+
+**`propose` is a stub.**
+It prints "not yet implemented" and returns 0. Wiring it to real network broadcast (ADR-003) is deferred until the validator registry and VRF are implemented. A stub exit code of 0 (not 2) avoids breaking scripts that probe whether the command exists.
+
+### Rationale
+
+- Keeping everything in `main.c` (no new headers/source) respects ADR-004's native-first, minimum-complexity principle. The CLI is ~280 lines; abstraction layers would add more lines than they save.
+- A static dispatch table is the simplest correct pattern for a small, fixed command set. `strcmp` over 11 entries has negligible cost.
+- Tab-separated text for STAGED is human-readable, trivially parseable with `strchr`, and requires no external library.
+
+---
+
 ## ADR-007: Crypto Module — Self-Contained SHA-256, Remove OpenSSL SHA Dependency
 
 **Date:** 2026-03
