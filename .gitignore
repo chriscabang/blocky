@@ -1,6 +1,6 @@
 **/*.DS_Store
 **/*.o
-.cache/
+**/.cache/
 build/
 bin/
 lib/

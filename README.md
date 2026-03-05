@@ -1,5 +1,8 @@
 # QuteChain: A Post-Quantum Secure Blockchain for Raspberry Pi
 
+ref-like-chain
+"An ambitious project to create a lightweight, post-quantum secure blockchain implementation for fun and learning."
+
                +----------------------+
                |      startchain       |  --> Initializes the blockchain
                +----------------------+
