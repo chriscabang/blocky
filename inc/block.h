@@ -1,30 +1,6 @@
 /**
- * # blockchain.h
- *
- * **Description**
- * Defines the `Block` data structure.
- *
- * **Author:** Chris Cabang <chriscabang@outlook.com>
- * **Date:** Feb 6 18:54:49 2025
- * **License:** :TODO:
- *
- * Copyright (c) 2025 Chris Cabang
- *
- * This software is provided 'as-is', without any express or implied
- * warranty. In no event will the authors be held liable for any damages
- * arising from the use of this software.
- *
- * Permission is granted to anyone to use this software for any purpose,
- * including commercial applications, and to alter it and redistribute it
- * freely, subject to the following restrictions:
- *
- * 1. The origin of this software must not be misrepresented; you must not
- *    claim that you wrote the original software. If you use this software
- *    in a product, an acknowledgment in the product documentation would be
- *    appreciated but is not required.
- * 2. Altered source versions must be plainly marked as such, and must not be
- *    misrepresented as being the original software.
- * 3. This notice may not be removed or altered from any source distribution.
+ * @file block.h
+ * @brief Block data structure and single-block operations.
  */
 
 #ifndef BLOCK_H
@@ -32,25 +8,54 @@
 
 #include "transaction.h"
 
+#include <stdint.h>
 #include <time.h>
 
 #define MAX_TRANSACTIONS 10
 
 typedef struct Block {
-  /*Header*/
-  uint32_t index;                  // Block number
-  time_t timestamp;                // Block creation time
-  unsigned char previous_hash[65]; // Hash of the previous block
-  unsigned char merkle_root[65];   // Merkle tree root hash
-  uint32_t nonce;                  // Proof of work counter
-  uint8_t consensus;               // Consensus algorithm (0 for PoW, 1 for PoS)
-  unsigned char hash[65];          // Block hash
+  /* Header */
+  uint32_t      index;                  /* Block number */
+  time_t        timestamp;              /* Block creation time */
+  unsigned char previous_hash[65];      /* Hash of the previous block */
+  unsigned char merkle_root[65];        /* Merkle tree root hash */
+  uint32_t      nonce;                  /* Proof of work counter */
+  uint8_t       consensus;              /* 0 = PoW, 1 = PoS */
+  unsigned char hash[65];              /* Block hash */
 
-  /*Content*/
-  Transaction transactions[MAX_TRANSACTIONS]; // List of transactions
-  uint32_t transaction_count;                 // Number of transactions
+  /* Content */
+  Transaction transactions[MAX_TRANSACTIONS];
+  uint32_t    transaction_count;
 
-  struct Block *next; // Pointer to the next block
+  /* Runtime only — NEVER written to disk. Zero this after any fread. */
+  struct Block *next;
 } Block;
 
-#endif // BLOCK_H
+/**
+ * @brief Allocate and initialise a new block.
+ *
+ * Sets index, timestamp (now), and previous_hash. If prev_hash is NULL the
+ * genesis sentinel ("0") is used. Does NOT compute the hash — call
+ * block_compute_hash() after filling in any additional fields.
+ * Caller must free with block_free().
+ */
+Block *block_create(uint32_t index, const unsigned char *prev_hash);
+
+/**
+ * @brief Compute and store the SHA-256 hash of the block.
+ * @return EXIT_SUCCESS or EXIT_FAILURE.
+ */
+int block_compute_hash(Block *block);
+
+/**
+ * @brief Verify that the block's stored hash matches a freshly computed hash.
+ * @return EXIT_SUCCESS if valid, EXIT_FAILURE if tampered or block is NULL.
+ */
+int block_verify_hash(const Block *block);
+
+/**
+ * @brief Free a heap-allocated block. Safe to call with NULL.
+ */
+void block_free(Block *block);
+
+#endif /* BLOCK_H */
