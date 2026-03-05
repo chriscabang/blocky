@@ -3,91 +3,106 @@
 
 /**
  * @file storage.h
- * @brief Implements block storage and retrieval functions
+ * @brief Block object store and ref management.
  *
- * The storage module provides functions to save and load blocks from disk.
- * The blocks are stored in the `chain/blocks/` directory with the block hash as
- * the filename. The `HEAD` file contains the hash of the latest block in the
- * blockchain.
- * The storage module also provides functions to update the reference to the
- * latest block in the blockchain.
- * The storage module also provides functions to mark a block as an orphan.
- * The storage module is used by the consensus module to store and retrieve
- * blocks from disk.
- * The storage module is used by the network module to send and receive blocks
- * over the network.
- * The storage module is used by the main module to create a blockchain with a
- * genesis block and add new blocks with transactions.
- * The storage module is used by the main module to save the blockchain to disk
- * and load it back into memory.
- * The storage module is used by the main module to destroy the blockchain.
- * The storage module is used by the main module to create a block from a
- * transaction.
+ * Mirrors git's repository layout:
  *
- * chain/
- * ├── blocks/           <-- Stores blocks by their hash
- * │   ├── a1b2c3d4...   <-- Block file (hashed contents)
- * │   ├── e5f6g7h8...
- * │   └── ...
- * ├── refs/             <-- Stores references to blocks
- * │   ├── main          <-- Reference to the main blockchain
- * │   ├── orphan        <-- Reference to orphaned blocks
- * │   └── ...
- * ├── heads/             <-- Stores references to blocks
- * │   ├── main          <-- Reference to the main blockchain
- * │   ├── orphan        <-- Reference to orphaned blocks
- * │   └── ...
- * └── HEAD              <-- Symbolic link to the current head block
+ *   .chain/
+ *   ├── blocks/              ← object store: one binary file per block, named by hash
+ *   │   ├── a1b2c3d4...
+ *   │   └── ...
+ *   ├── refs/
+ *   │   └── heads/
+ *   │       └── main        ← tip hash of the main branch
+ *   └── HEAD                ← "ref: refs/heads/main"  (symbolic ref)
  *
+ * HEAD resolution: HEAD → refs/heads/main → block hash
+ *
+ * storage_insert() writes a block to the object store only.
+ * storage_checkout() advances the current branch tip (like git checkout).
+ * These are intentionally separate operations.
  */
 
+#include "block.h"
 
-#include "blockchain.h"
+#ifndef HASH_SIZE
+#define HASH_SIZE 65            /* SHA-256 hex string + null terminator */
+#endif
+
+#define GENESIS_PREVIOUS_HASH "0"   /* Sentinel: genesis block has no parent */
 
 /**
- * storage_insert
- * @brief Inserts a block to storage using its hash as an identifier.
+ * @brief Insert a block into the object store.
  *
- * @param block: The block to save.
- * @return EXIT_SUCCESS if successful, EXIT_FAILURE otherwise.
+ * Does NOT update HEAD or any ref. Call storage_checkout() separately
+ * to advance the chain tip. Idempotent: re-inserting an existing block
+ * returns EXIT_SUCCESS without modifying anything.
+ *
+ * @param block  Block to store. Must be non-NULL with a non-empty hash.
+ * @return EXIT_SUCCESS or EXIT_FAILURE.
  */
-int          storage_insert(const Block* block);
+int    storage_insert(const Block *block);
 
 /**
- * storage_read
- * @brief Reads a block from storage using its hash as an identifier.
+ * @brief Read a block from the object store by its hash.
  *
- * @param hash: The hash of the block to load.
- * @return The block information, or NULL if the block could not be loaded.
+ * Caller owns the returned Block and must free() it.
+ *
+ * @param hash  Hex hash string identifying the block.
+ * @return Heap-allocated Block, or NULL on error.
  */
-Block*       storage_read(const char* hash);
+Block *storage_read(const char *hash);
 
 /**
- * storage_move
- * @brief Moves to a block in the blockchain.
+ * @brief Check whether a block with the given hash exists on disk.
  *
- * @param hash: The hash of the block to move to.
- * @return EXIT_SUCCESS if successful, EXIT_FAILURE otherwise.
+ * Does not allocate memory or open the block file.
+ *
+ * @param hash  Hex hash string to check.
+ * @return 1 if the block file exists, 0 otherwise.
  */
-int          storage_move(const char* hash);
+int    storage_exists(const char *hash);
 
 /**
- * storage_head
- * @brief Retrieves the head block hash of the current blockchain.
+ * @brief Resolve HEAD and fill buf with the current chain tip hash.
  *
- * @return The head block of the current blockchain.
+ * Follows the symbolic ref chain: HEAD → refs/heads/main → hash.
+ * Returns EXIT_FAILURE if the chain is empty (no checkout has been done yet).
+ *
+ * @param buf   Caller-provided buffer to receive the null-terminated hash.
+ * @param size  Size of buf in bytes. Must be >= HASH_SIZE.
+ * @return EXIT_SUCCESS or EXIT_FAILURE.
  */
-const char*  storage_head(void);
+int    storage_head(char *buf, size_t size);
 
 /**
- * storage_scan
- * @brief Reads blocks between the offset and offset + count. A 0 offset reads
- * from the head block.
+ * @brief Advance the current branch tip to the given block hash.
  *
- * @param offset: Block offset to start reading from.
- * @param count: Number of blocks to read, return the actual number read.
- * @return Array of block hashes, or NULL if no blocks are found.
+ * Updates the ref pointed to by HEAD (e.g. refs/heads/main).
+ * Verifies the block exists before updating. No-op if hash already
+ * matches the current tip.
+ *
+ * @param hash  Block hash to set as the new chain tip.
+ * @return EXIT_SUCCESS or EXIT_FAILURE.
  */
-char**       storage_scan(unsigned int offset, unsigned int* count);
+int    storage_checkout(const char *hash);
 
-#endif//STORAGE_H
+/**
+ * @brief Walk the chain backwards from HEAD, collecting block hashes.
+ *
+ * Skips the first 'offset' blocks, then collects up to *count hashes.
+ * Stops early at genesis or if a block cannot be read.
+ * Updates *count to the actual number of hashes returned.
+ *
+ * Caller must free each entry and then the outer array:
+ *   for (i = 0; i < count; i++) free(hashes[i]);
+ *   free(hashes);
+ *
+ * @param offset  Blocks to skip from HEAD before collecting.
+ * @param count   In: max hashes to return. Out: actual number returned.
+ * @return Heap-allocated array of hash strings, or NULL if chain is empty
+ *         or an error occurs.
+ */
+char **storage_scan(unsigned int offset, unsigned int *count);
+
+#endif /* STORAGE_H */
