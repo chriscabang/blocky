@@ -2,7 +2,7 @@
 #ifndef POW_H
 #define POW_H
 
-#include "blockchain.h"
+#include "block.h"
 
 // Proof of Work Difficulty Level
 #define DIFFICULTY 4

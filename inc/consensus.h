@@ -1,7 +1,7 @@
 #ifndef CONSENSUS_H
 #define CONSENSUS_H
 
-#include "blockchain.h"
+#include "block.h"
 /*#include "pos.h"*/
 
 #define SWITCH_INTERVAL 10 // Switch between PoW and PoS every 10 blocks

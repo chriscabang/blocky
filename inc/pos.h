@@ -1,7 +1,7 @@
 #ifndef POS_H
 #define POS_H
 
-#include "blockchain.h"
+#include "block.h"
 
 #define MAX_VALIDATORS 100
 

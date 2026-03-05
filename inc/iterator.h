@@ -6,7 +6,7 @@
  * @brief Implements an iterator for the blockchain
  */
 
-#include "blockchain.h"
+#include "block.h"
 
 // Create iterator struct with a pointer to the current block
 // and a pointer to the next block
