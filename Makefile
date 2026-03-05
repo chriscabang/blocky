@@ -73,13 +73,15 @@ $(BUILD)/test_%.o: tests/test_%.c | $(DBG_DIR)
 $(BUILD)/test_%: $(BUILD)/test_%.o $(DBG_OBJ) | debug
 	$(CC) $(DBG_CFLAGS) $(LDFLAGS) -o $@ $< $(DBG_OBJ) -L/opt/homebrew/lib -lcmocka
 
-# Build and run unit tests
+# Build and run unit tests — run every suite even if one fails
 test: $(TEST_BIN)
 	@echo "Running tests..."
-	@for test in $(TEST_BIN); do \
-		$$test || exit 1; \
-	done
-	@echo "All tests passed."
+	@failures=0; \
+	for test in $(TEST_BIN); do \
+		$$test || failures=$$((failures + 1)); \
+	done; \
+	if [ $$failures -eq 0 ]; then echo "All tests passed."; \
+	else echo "$$failures test suite(s) failed." >&2; exit 1; fi
 
 clean:
 	rm -rf $(BUILD)

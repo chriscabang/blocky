@@ -338,3 +338,181 @@ Three setup functions provide isolation:
 - `setup_chain` — builds a 5-block linked chain, HEAD at tip
 
 ---
+
+## ADR-006: Block/Chain Module Split — Pool Allocator and Runtime Pointer Fix
+
+**Date:** 2026-03
+**Status:** Adopted
+**Files:** `inc/block.h`, `src/block.c`, `inc/chain.h`, `src/chain.c`
+
+### Context
+
+`blockchain.c` was a monolith that mixed the `Block` data type, single-block operations, and chain-level operations. It also had two architectural bugs:
+
+1. **`Block.next` written to disk.** `storage_insert()` called `fwrite(block, sizeof(Block), 1, file)` — the runtime `next` pointer was serialised as raw memory. When read back via `fread`, the field contains a garbage address. `validate()` dereferenced this garbage pointer, causing a crash.
+2. **Hidden global state.** `Block *chain = NULL` was a file-scoped global, making multiple chain instances and clean teardown in tests difficult.
+
+### Decision
+
+Split `blockchain.c/.h` into two units:
+
+| Unit | Responsibility |
+|---|---|
+| `block.h / block.c` | `Block` data type + single-block operations (`create`, `compute_hash`, `verify_hash`, `free`) |
+| `chain.h / chain.c` | In-memory chain with pool allocator; public chain API (`load`, `unload`, `validate`, `add`, `propose`, `info`, `show`, `list`) |
+
+`blockchain.h` becomes a compatibility shim that includes both headers — existing code that includes `blockchain.h` continues to compile.
+
+### Pool Allocator Design
+
+```c
+#define CHAIN_POOL_SIZE 64
+
+typedef struct {
+  Block   *head;
+  Block    pool[CHAIN_POOL_SIZE];
+  uint8_t  pool_used[CHAIN_POOL_SIZE];
+} Chain;
+```
+
+- `Chain` is heap-allocated once by `chain_load()`. The pool is embedded — no per-block `malloc` after init.
+- `pool_alloc(c)` scans `pool_used` for a free slot, marks it, returns `&pool[i]`.
+- `pool_free(c, b)` uses pointer arithmetic (`b - c->pool`) to locate and clear the slot.
+- At steady state only **one slot is occupied**: the current chain tip. When `chain_add()` installs a new block, the old head slot is freed immediately after (it is already persisted to disk).
+- Pool exhaustion returns `EXIT_FAILURE` from `chain_add()`. With CHAIN_POOL_SIZE = 64 this is unreachable in normal operation but tested explicitly.
+
+### `Block.next` Fix
+
+`Block.next` is a **runtime-only** pointer. It must never reach disk:
+
+- `storage_insert()` writes a **stack copy** of the block with `copy.next = NULL`.
+- `storage_read()` and `storage_read_into()` set `block->next = NULL` after `fread`.
+- `chain_validate()` and `chain_add()` never dereference `next`; they rely on `previous_hash` for chain linkage.
+
+### Removed API
+
+`load()`, `validate()`, `unload()`, `add()`, `propose()`, `info()`, `show()`, `list()` are removed. Their replacements are prefixed with `chain_`:
+
+| Old | New |
+|---|---|
+| `load()` | `chain_load()` |
+| `validate(block)` | `chain_validate(c, block)` |
+| `unload()` | `chain_unload(c)` |
+| `add(block)` | `chain_add(c, block)` |
+| `propose(block)` | `chain_propose(c, block)` (stub) |
+| `info()` | `chain_info(c)` |
+| `show(hash)` | `chain_show(c, hash)` |
+| `list(n)` | `chain_list(c, n)` |
+
+### Rationale
+
+- **No C++ / smart pointers needed.** A C pool allocator gives the same zero-allocation-after-init benefit with no ABI complications and is compatible with the native-first (ADR-004) constraint.
+- **Explicit `Chain *` parameter** eliminates hidden global state, makes tests clean (each test creates/destroys its own `Chain`), and allows multiple chain instances.
+- **`block_verify_hash()`** verifies integrity without modifying the original block: copies to stack, calls `hash()` on the copy, compares. This is the correct pattern for validation.
+- **`storage_read_into(hash, out)`** fills a pool slot directly — no intermediate `malloc`/`free` for the common case.
+
+### Test Coverage
+
+**`tests/test_block.c`** — 12 tests across 4 groups:
+
+| Group | Tests |
+|---|---|
+| `create` | genesis sentinel, non-genesis (copies prev hash), sets timestamp, next is NULL |
+| `compute` | hash is non-empty after call, deterministic (same fields → same hash) |
+| `verify` | NULL block, valid block, corrupted hash field, tampered header field |
+| `free` | NULL (no crash), valid block |
+
+**`tests/test_chain.c`** — 15 tests across 4 groups:
+
+| Group | Tests |
+|---|---|
+| `load` | creates genesis on empty chain, loads existing HEAD, two independent loads agree |
+| `unload` | NULL is safe |
+| `validate` | NULL chain, NULL block, valid next block, wrong previous_hash, tampered hash |
+| `add` | NULL args, advances head, updates storage HEAD, `next` is NULL on disk (key fix), invalid block rejected, pool exhaustion |
+
+---
+
+## ADR-007: Crypto Module — Self-Contained SHA-256, Remove OpenSSL SHA Dependency
+
+**Date:** 2026-03
+**Status:** Adopted
+**Files:** `inc/sha256.h`, `src/sha256.c`, `inc/crypto.h`, `src/crypto.c`, `tests/test_crypto.c`
+
+### Context — Bugs Found in Original crypto.c
+
+A review of the original `crypto.c` found the following issues:
+
+| Bug | Severity | Detail |
+|---|---|---|
+| Hash truncated to 32 chars | Critical | `memcpy(block->hash, hash_hex, SHA256_DIGEST_LENGTH)` copied 32 of 64 hex chars. SHA-256 output was silently halved. |
+| `consensus` field omitted from hash | High | Changing PoW↔PoS produced the same block hash. |
+| `compute_merkle_root` used only `sender` | High | `recipient` and `amount` were ignored — two different transactions with the same sender produced the same Merkle root. |
+| Deprecated OpenSSL SHA API | Medium | `SHA256_Init/Update/Final` deprecated in OpenSSL 3.x; EVP interface required. |
+| NULL dereference before NULL check | Medium | `log_info("Hashing block %u", block->index)` ran before `if (block == NULL)`. |
+| `sign()`/`verify()` declared, not defined | Medium | Calling either function would cause a linker error. |
+| `puts()` in `compute_merkle_root` | Low | Bypassed the log framework. |
+| No `#ifndef` guard on `HASH_SIZE` | Low | Double-define if included after `storage.h`. |
+
+### Decision — Self-Contained SHA-256
+
+Replace OpenSSL's SHA-256 with a clean, self-contained implementation of FIPS 180-4. OpenSSL stays in the build for TLS only.
+
+**Rationale:**
+
+| Goal | Why |
+|---|---|
+| Small | `sha256.h` + `sha256.c`: ~130 lines, zero dependencies. No OpenSSL EVP overhead. |
+| Auditable | SHA-256 is a NIST-published standard (FIPS 180-4). Every line can be checked against the spec. No trust required beyond the published algorithm. |
+| Portable | Pure C99. Works on Raspberry Pi, macOS, Linux without build system changes. |
+| No deprecated API | Removes all `SHA256_Init/Update/Final` calls from the build. |
+| Native-first | Aligns with ADR-004: minimise unmanaged external dependencies. |
+
+**Alternative considered: Monocypher (Blake2b)**
+
+Monocypher is a 2-file, public-domain, formally audited library (used in WireGuard) that provides Blake2b for hashing. It is faster than SHA-256 on the same hardware. It was not chosen here because:
+- Blake2b changes the hash format (not SHA-256 compatible)
+- SHA-256 is already established in the codebase and test suite
+- The self-contained implementation is equally small and auditable
+
+Monocypher remains a valid future choice if the hash format is renegotiated.
+
+### sha256.h / sha256.c Design
+
+```c
+void sha256_init  (sha256_ctx *ctx);
+void sha256_update(sha256_ctx *ctx, const void *data, size_t len);
+void sha256_final (sha256_ctx *ctx, uint8_t digest[SHA256_DIGEST_LEN]);
+void sha256_digest(const void *data, size_t len, uint8_t out[SHA256_DIGEST_LEN]);
+```
+
+- `sha256_ctx` holds: `state[8]`, `bit_count` (64-bit), `buf[64]`, `buflen`
+- `sha256_final` **wipes** the context after producing the digest (no state leakage)
+- Padding follows FIPS 180-4 § 5.1.1 exactly; handles both 1-block and 2-block padding paths
+- `sha256_digest` is the one-shot helper for the common case
+
+### Fixes Applied to crypto.c
+
+1. **Hash length**: `to_hex(digest, 32, (char *)block->hash)` writes all 64 hex chars + null. `HASH_SIZE = 65` is now fully utilised.
+2. **`consensus` in hash**: Added `sha256_update(&ctx, &block->consensus, sizeof(block->consensus))`.
+3. **`compute_merkle_root`**: Feeds `sender + recipient + amount` for each transaction using incremental `sha256_update`. No intermediate buffer — avoids the previous overflow risk.
+4. **NULL check**: Moved before `log_info` in `hash()`.
+5. **`sign()`/`verify()` stubs**: Implemented as `return EXIT_FAILURE` with clear ADR-003 reference.
+
+### For Signing (Future Work)
+
+`sign()` and `verify()` remain stubs. They will be wired to **liboqs Dilithium** as planned in ADR-003. The function signatures are already in `crypto.h` and compatible with a Dilithium integration.
+
+### Test Coverage (`tests/test_crypto.c`) — 20 tests across 5 groups
+
+| Group | Tests |
+|---|---|
+| `sha256/nist` | FIPS 180-4 known answer: SHA-256("") |
+| `sha256/vs_openssl` | Cross-validation vs OpenSSL reference: 1 byte, 5 bytes, 55, 56, 64, 200, 256 bytes |
+| `sha256/incremental` | Byte-by-byte update matches one-shot; deterministic; different inputs differ; output length |
+| `block_hash` | Full 64-char output (regression for truncation bug); nonce change changes hash; consensus change changes hash; NULL block |
+| `merkle` | Empty transactions → "0"; NULL args safe; transactions produce full 64-char root; different amounts produce different roots |
+
+The `vs_openssl` group uses OpenSSL as a reference oracle (suppressing deprecation warnings with pragma guards). The 55-byte and 56-byte tests specifically exercise the two padding paths in `sha256_final`.
+
+---
