@@ -15,6 +15,9 @@
 FILE *log_stream = NULL;
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// :TODO: use shared memory to stream logs to the pipe. is that a good idea?
+// :TODO: create log telemetry for the chain
+// :TODO: change this to "trace"
 void log_set_stream(FILE *stream) {
   log_stream = (stream != NULL) ? stream : stderr;
 }

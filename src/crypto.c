@@ -2,52 +2,31 @@
 #include "crypto.h"
 #include "log.h"
 
+// :TODO: maybe replace with something smaller? tinycrypt? monocypher?
 #include <openssl/sha.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-void base16(const unsigned char *hash, size_t len, char *output) {
+// :TODO: Use un-deprecated functions
+// :TODO: Unit test this function
+// :TODO: Test for quantum resistance
+
+/**
+ * base16
+ * @brief Converts a byte array to a hexadecimal string.
+ *
+ * @param hash: The byte array to convert.
+ * @param len: The length of the byte array.
+ * @param output: The output buffer for the hexadecimal string.
+ */
+static void base16(const unsigned char *hash, size_t len, char *output) {
   const char hex[] = "0123456789abcdef";
   for (size_t i = 0; i < len; ++i) {
     output[i * 2] = hex[(hash[i] >> 4) & 0xF];
     output[i * 2 + 1] = hex[hash[i] & 0xF];
   }
   output[len * 2] = '\0'; // Null terminator
-}
-
-// Compute Merkle root for all transactions in a block
-// This simple implementation concatenates the sender strings of all
-// transactions :TODO: Implement a proper Merkle tree
-void compute_merkle_root(Block *block, char *merkle_root) {
-  if (!block || !merkle_root) {
-    puts("Invalid block or merkle root");
-    return;
-  }
-
-  if (block->transaction_count == 0) {
-    memcpy(merkle_root, "0", 1);
-    return;
-  }
-
-  char concatenated[4096] = {0};
-  for (uint32_t i = 0; i < block->transaction_count; i++) {
-    /*strncat(concatenated, block->transactions[i].sender, sizeof(concatenated)
-     * - strlen(concatenated) - 1);*/
-    memcpy(concatenated + strlen(concatenated), block->transactions[i].sender,
-           strlen(block->transactions[i].sender));
-  }
-
-  unsigned char hash[SHA256_DIGEST_LENGTH];
-  SHA256_CTX sha256;
-  SHA256_Init(&sha256);
-  SHA256_Update(&sha256, concatenated, strlen(concatenated));
-  SHA256_Final(hash, &sha256);
-
-  for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-    sprintf(merkle_root + (i * 2), "%02x", hash[i]);
-  }
-  merkle_root[SHA256_DIGEST_LENGTH * 2] = '\0';
 }
 
 /**
@@ -89,3 +68,49 @@ int hash(Block *block) {
 
   return EXIT_SUCCESS;
 }
+
+/** 
+ * compute_merkle_root
+ * @brief Computes the Merkle root of a block.
+ *
+ * @param block: The block to compute the Merkle root for.
+ * @param merkle_root: The output buffer for the Merkle root.
+ *
+ * @note The Merkle root is computed by concatenating the sender strings of
+ * all transactions in the block and hashing the result using SHA-256.
+ *
+ * :TODO: Implement a proper Merkle tree for better performance and security.
+ */
+void compute_merkle_root(Block *block, char *merkle_root) {
+  if (!block || !merkle_root) {
+    puts("Invalid block or merkle root");
+    return;
+  }
+
+  if (block->transaction_count == 0) {
+    memcpy(merkle_root, "0", 1);
+    return;
+  }
+
+  char concatenated[4096] = {0};
+  for (uint32_t i = 0; i < block->transaction_count; i++) {
+    /*strncat(concatenated, block->transactions[i].sender, sizeof(concatenated)
+     * - strlen(concatenated) - 1);*/
+    memcpy(concatenated + strlen(concatenated), block->transactions[i].sender,
+           strlen(block->transactions[i].sender));
+  }
+
+  unsigned char hash[SHA256_DIGEST_LENGTH];
+  SHA256_CTX sha256;
+  SHA256_Init(&sha256);
+  SHA256_Update(&sha256, concatenated, strlen(concatenated));
+  SHA256_Final(hash, &sha256);
+
+  for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+    sprintf(merkle_root + (i * 2), "%02x", hash[i]);
+  }
+
+  merkle_root[SHA256_DIGEST_LENGTH * 2] = '\0';
+}
+
+// :TODO: Secure randomizer
