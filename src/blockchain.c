@@ -7,6 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+// :TODO: make this C++ and use shared memory for easy management.
+// :TODO: shared mamory also prevents allocation (slowing the system)
+// :TODO: so pre-allocate memory ahead. Anyway, we know the nodes already ahead.
+
 Block *chain = NULL;
 
 /** 
@@ -17,13 +21,17 @@ Block *chain = NULL;
  */
 int load(void) {
   if (chain != NULL) {
+    // :TODO: replace with system generic message? 
+    //        or define somewhere (toml?) and use error_codes instead.
     log_debug("Blockchain already loaded");
     return EXIT_FAILURE;
   }
 
   log_info("Loading blockchain from storage");
 
-  chain = storage_read(storage_head());
+  char head[HASH_SIZE];
+  if (storage_head(head, sizeof(head)) == EXIT_SUCCESS)
+    chain = storage_read(head);
   if (chain == NULL) {
     // Initialize the blockchain with a genesis block
     chain = (Block*) malloc(sizeof(Block));
@@ -68,14 +76,12 @@ int load(void) {
  * @return EXIT_SUCCESS if successful, EXIT_FAILURE otherwise.
  */
 int validate(Block* block) {
-  log_info("Validating block %u", block->index);
-
-  // :TOOD: Cleanup, too much if statements. Use do-while loop
-
   if (block == NULL) {
     log_error("Block cannot be NULL");
     return EXIT_FAILURE;
   }
+
+  log_info("Validating block %u", block->index);
   
   // Check if the previous hash is valid
   Block* previous_block = storage_read((char*) block->previous_hash);
@@ -138,3 +144,17 @@ int validate(Block* block) {
   return EXIT_SUCCESS;
 }
 
+/**
+ * unload
+ * @brief Free the in-memory blockchain and reset chain to NULL.
+ */
+void unload(void) {
+  Block *current = chain;
+  while (current) {
+    Block *next = current->next;
+    free(current);
+    current = next;
+  }
+  chain = NULL;
+  log_debug("Blockchain unloaded");
+}
