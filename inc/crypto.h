@@ -1,52 +1,64 @@
+/**
+ * @file crypto.h
+ * @brief Block hashing, Merkle root, and signature stubs.
+ *
+ * Hashing uses the built-in SHA-256 implementation (sha256.h/.c).
+ * OpenSSL is NOT used here. Signing stubs are pending Dilithium
+ * integration via liboqs (see ADR-003).
+ */
+
 #ifndef CRYPTO_H
 #define CRYPTO_H
 
-#include "blockchain.h"
+#include "block.h"
 
-#define HASH_SIZE 65 // SHA-256 hash size + null terminator
-
-/**
- * hash
- * @brief Compute the SHA-256 hash of a block and the merkle
- * root of the block's transactions.
- *
- * @param block: The block to hash. Returns the hash in the block.
- * @return EXIT_SUCCESS on success, EXIT_FAILURE on failure.
- */
-int hash(Block* block);
+#ifndef HASH_SIZE
+#define HASH_SIZE 65  /* SHA-256 hex string (64 chars) + null terminator */
+#endif
 
 /**
- * sign
- * @brief Sign a block using a private key.
+ * @brief Compute the SHA-256 hash of a block and store it in block->hash.
  *
- * @param block: The block to sign.
- * @param private_key: The private key to sign the block with.
- * @param signature: The signature to return.
+ * Feeds the following fields into SHA-256 in order:
+ *   index, timestamp, previous_hash, merkle_root, nonce, consensus
+ *
+ * Does NOT read block->hash as input (avoids circular dependency).
+ * Does NOT compute the Merkle root — call compute_merkle_root() first
+ * if the block has transactions.
+ *
+ * @param block  Block to hash. Must be non-NULL.
+ * @return EXIT_SUCCESS or EXIT_FAILURE.
  */
-int sign(Block* block, const char* private_key, char* signature);
+int hash(Block *block);
 
 /**
- * verify
- * @brief Verify a blocks signature using a public key.
+ * @brief Compute the Merkle root of a block's transactions.
  *
- * @param block: The block to verify.
- * @param public_key: The public key to verify the block with.
+ * Feeds sender + recipient + amount of every transaction into SHA-256
+ * in order. Writes a 64-char hex string into merkle_root.
+ * Sets merkle_root to "0" if transaction_count == 0.
+ *
+ * @param block        Block whose transactions to summarise.
+ * @param merkle_root  Caller-provided buffer of at least HASH_SIZE bytes.
  */
-int verify(const Block* block, const char* public_key);
+void compute_merkle_root(Block *block, char *merkle_root);
 
-/* Computes the Merkle root for all transactions in a block.
- * For simplicity, this implementation concatenates the sender strings
- * of all transactions and computes a SHA-256 hash over that data.
+/**
+ * @brief Sign a block with a Dilithium private key (stub).
+ *
+ * Not yet implemented — pending liboqs Dilithium integration (ADR-003).
+ *
+ * @return EXIT_FAILURE always.
  */
-/*void compute_merkle_root(Block *block, char *merkle_root);*/
+int sign(Block *block, const char *private_key, char *signature);
 
-/* Computes the block hash over its header fields:
- *  - index
- *  - timestamp
- *  - previous_hash
- *  - nonce
- *  - merkle_root
+/**
+ * @brief Verify a block's Dilithium signature (stub).
+ *
+ * Not yet implemented — pending liboqs Dilithium integration (ADR-003).
+ *
+ * @return EXIT_FAILURE always.
  */
-/*void compute_block_hash(Block *block, char *hash);*/
+int verify(const Block *block, const char *public_key);
 
-#endif // CRYPTO_H
+#endif /* CRYPTO_H */

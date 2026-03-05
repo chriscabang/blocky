@@ -1,116 +1,108 @@
-/* crypto.c */
+/**
+ * @file crypto.c
+ * @brief Block hashing and Merkle root using built-in SHA-256.
+ *
+ * No OpenSSL SHA functions are used here. All hashing goes through
+ * sha256.h / sha256.c (FIPS 180-4, self-contained).
+ *
+ * OpenSSL (-lcrypto) remains linked for TLS only.
+ */
+
 #include "crypto.h"
+#include "sha256.h"
 #include "log.h"
 
-// :TODO: maybe replace with something smaller? tinycrypt? monocypher?
-#include <openssl/sha.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-// :TODO: Use un-deprecated functions
-// :TODO: Unit test this function
-// :TODO: Test for quantum resistance
+/* ── internal helpers ─────────────────────────────────────────────────── */
 
-/**
- * base16
- * @brief Converts a byte array to a hexadecimal string.
- *
- * @param hash: The byte array to convert.
- * @param len: The length of the byte array.
- * @param output: The output buffer for the hexadecimal string.
- */
-static void base16(const unsigned char *hash, size_t len, char *output) {
-  const char hex[] = "0123456789abcdef";
-  for (size_t i = 0; i < len; ++i) {
-    output[i * 2] = hex[(hash[i] >> 4) & 0xF];
-    output[i * 2 + 1] = hex[hash[i] & 0xF];
-  }
-  output[len * 2] = '\0'; // Null terminator
+/* Encode raw bytes as lowercase hex, writing out[len*2] + null terminator. */
+static void to_hex(const uint8_t *bytes, size_t len, char *out) {
+    static const char HEX[] = "0123456789abcdef";
+    for (size_t i = 0; i < len; i++) {
+        out[i * 2]     = HEX[(bytes[i] >> 4) & 0xf];
+        out[i * 2 + 1] = HEX[ bytes[i]       & 0xf];
+    }
+    out[len * 2] = '\0';
 }
 
-/**
- * hash
- * @brief Computes the SHA-256 hash of a block.
- *
- * @param block: The block to hash.
- * @return EXIT_SUCCESS if successful, EXIT_FAILURE otherwise.
- */
-int hash(Block *block) {
+/* ── public API ───────────────────────────────────────────────────────── */
 
-  log_info("Hashing block %u", block->index);
-
-  if (block == NULL) {
-    log_error("Invalid block or output hash");
-    return EXIT_FAILURE;
-  }
-
-  SHA256_CTX sha256;
-  SHA256_Init(&sha256);
-
-  // Combine block data to hash
-  SHA256_Update(&sha256, &block->index, sizeof(block->index));
-  SHA256_Update(&sha256, &block->timestamp, sizeof(block->timestamp));
-  SHA256_Update(&sha256, block->previous_hash,
-                strlen((const char *)block->previous_hash));
-  SHA256_Update(&sha256, block->merkle_root,
-                strlen((const char *)block->merkle_root));
-  SHA256_Update(&sha256, &block->nonce, sizeof(block->nonce));
-
-  unsigned char hash_value[SHA256_DIGEST_LENGTH];
-  SHA256_Final(hash_value, &sha256);
-
-  // Convert hash to hex string
-  char hash_hex[SHA256_DIGEST_LENGTH * 2 + 1];
-  base16(hash_value, SHA256_DIGEST_LENGTH, hash_hex);
-
-  memcpy(block->hash, hash_hex, SHA256_DIGEST_LENGTH);
-
-  return EXIT_SUCCESS;
-}
-
-/** 
- * compute_merkle_root
- * @brief Computes the Merkle root of a block.
- *
- * @param block: The block to compute the Merkle root for.
- * @param merkle_root: The output buffer for the Merkle root.
- *
- * @note The Merkle root is computed by concatenating the sender strings of
- * all transactions in the block and hashing the result using SHA-256.
- *
- * :TODO: Implement a proper Merkle tree for better performance and security.
- */
 void compute_merkle_root(Block *block, char *merkle_root) {
-  if (!block || !merkle_root) {
-    puts("Invalid block or merkle root");
-    return;
-  }
+    if (!block || !merkle_root) {
+        log_error("compute_merkle_root: NULL argument");
+        return;
+    }
 
-  if (block->transaction_count == 0) {
-    memcpy(merkle_root, "0", 1);
-    return;
-  }
+    if (block->transaction_count == 0) {
+        merkle_root[0] = '0';
+        merkle_root[1] = '\0';
+        return;
+    }
 
-  char concatenated[4096] = {0};
-  for (uint32_t i = 0; i < block->transaction_count; i++) {
-    /*strncat(concatenated, block->transactions[i].sender, sizeof(concatenated)
-     * - strlen(concatenated) - 1);*/
-    memcpy(concatenated + strlen(concatenated), block->transactions[i].sender,
-           strlen(block->transactions[i].sender));
-  }
+    /* Hash all transactions incrementally: sender + recipient + raw amount
+     * bytes. Using sha256_update avoids an intermediate accumulation buffer
+     * and includes all fields that make a transaction unique. */
+    sha256_ctx ctx;
+    sha256_init(&ctx);
 
-  unsigned char hash[SHA256_DIGEST_LENGTH];
-  SHA256_CTX sha256;
-  SHA256_Init(&sha256);
-  SHA256_Update(&sha256, concatenated, strlen(concatenated));
-  SHA256_Final(hash, &sha256);
+    for (uint32_t i = 0; i < block->transaction_count; i++) {
+        const Transaction *tx = &block->transactions[i];
+        sha256_update(&ctx, tx->sender,    strlen(tx->sender));
+        sha256_update(&ctx, tx->recipient, strlen(tx->recipient));
+        sha256_update(&ctx, &tx->amount,   sizeof(tx->amount));
+    }
 
-  for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-    sprintf(merkle_root + (i * 2), "%02x", hash[i]);
-  }
-
-  merkle_root[SHA256_DIGEST_LENGTH * 2] = '\0';
+    uint8_t digest[SHA256_DIGEST_LEN];
+    sha256_final(&ctx, digest);
+    to_hex(digest, SHA256_DIGEST_LEN, merkle_root);
 }
 
-// :TODO: Secure randomizer
+int hash(Block *block) {
+    if (!block) {
+        log_error("hash: NULL block");
+        return EXIT_FAILURE;
+    }
+
+    log_info("Hashing block %u", block->index);
+
+    sha256_ctx ctx;
+    sha256_init(&ctx);
+
+    /* Feed every field that defines the block header.
+     * Order matches the original crypto.c to preserve hash compatibility,
+     * with `consensus` added (it was previously omitted — a security gap). */
+    sha256_update(&ctx, &block->index,       sizeof(block->index));
+    sha256_update(&ctx, &block->timestamp,   sizeof(block->timestamp));
+    sha256_update(&ctx, block->previous_hash,
+                  strlen((const char *)block->previous_hash));
+    sha256_update(&ctx, block->merkle_root,
+                  strlen((const char *)block->merkle_root));
+    sha256_update(&ctx, &block->nonce,       sizeof(block->nonce));
+    sha256_update(&ctx, &block->consensus,   sizeof(block->consensus));
+
+    uint8_t digest[SHA256_DIGEST_LEN];
+    sha256_final(&ctx, digest);
+
+    /* Write 64-char hex + null into block->hash (HASH_SIZE = 65). */
+    to_hex(digest, SHA256_DIGEST_LEN, (char *)block->hash);
+
+    return EXIT_SUCCESS;
+}
+
+int sign(Block *block, const char *private_key, char *signature) {
+    (void)block;
+    (void)private_key;
+    (void)signature;
+    log_error("sign: not implemented — pending Dilithium integration (ADR-003)");
+    return EXIT_FAILURE;
+}
+
+int verify(const Block *block, const char *public_key) {
+    (void)block;
+    (void)public_key;
+    log_error("verify: not implemented — pending Dilithium integration (ADR-003)");
+    return EXIT_FAILURE;
+}
