@@ -2,8 +2,6 @@
   {
     "arguments": [
       "/usr/bin/gcc",
-      "-I/opt/homebrew/opt/binutils/include",
-      "-I/opt/homebrew/opt/openssl@3/include",
       "-pedantic",
       "-Wall",
       "-Wextra",
@@ -13,23 +11,20 @@
       "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
       "-I/Users/chriscabang/Workspace/blocky/inc",
       "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
-      "-g",
-      "-DDEBUG=1",
+      "-O2",
       "-fPIC",
       "-c",
       "-o",
-      "src/blockchain.o",
+      "/Users/chriscabang/Workspace/blocky/build/release/blockchain.o",
       "src/blockchain.c"
     ],
     "directory": "/Users/chriscabang/Workspace/blocky",
     "file": "/Users/chriscabang/Workspace/blocky/src/blockchain.c",
-    "output": "/Users/chriscabang/Workspace/blocky/src/blockchain.o"
+    "output": "/Users/chriscabang/Workspace/blocky/build/release/blockchain.o"
   },
   {
     "arguments": [
       "/usr/bin/gcc",
-      "-I/opt/homebrew/opt/binutils/include",
-      "-I/opt/homebrew/opt/openssl@3/include",
       "-pedantic",
       "-Wall",
       "-Wextra",
@@ -39,23 +34,20 @@
       "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
       "-I/Users/chriscabang/Workspace/blocky/inc",
       "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
-      "-g",
-      "-DDEBUG=1",
+      "-O2",
       "-fPIC",
       "-c",
       "-o",
-      "src/consensus.o",
+      "/Users/chriscabang/Workspace/blocky/build/release/consensus.o",
       "src/consensus.c"
     ],
     "directory": "/Users/chriscabang/Workspace/blocky",
     "file": "/Users/chriscabang/Workspace/blocky/src/consensus.c",
-    "output": "/Users/chriscabang/Workspace/blocky/src/consensus.o"
+    "output": "/Users/chriscabang/Workspace/blocky/build/release/consensus.o"
   },
   {
     "arguments": [
       "/usr/bin/gcc",
-      "-I/opt/homebrew/opt/binutils/include",
-      "-I/opt/homebrew/opt/openssl@3/include",
       "-pedantic",
       "-Wall",
       "-Wextra",
@@ -65,23 +57,20 @@
       "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
       "-I/Users/chriscabang/Workspace/blocky/inc",
       "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
-      "-g",
-      "-DDEBUG=1",
+      "-O2",
       "-fPIC",
       "-c",
       "-o",
-      "src/crypto.o",
+      "/Users/chriscabang/Workspace/blocky/build/release/crypto.o",
       "src/crypto.c"
     ],
     "directory": "/Users/chriscabang/Workspace/blocky",
     "file": "/Users/chriscabang/Workspace/blocky/src/crypto.c",
-    "output": "/Users/chriscabang/Workspace/blocky/src/crypto.o"
+    "output": "/Users/chriscabang/Workspace/blocky/build/release/crypto.o"
   },
   {
     "arguments": [
       "/usr/bin/gcc",
-      "-I/opt/homebrew/opt/binutils/include",
-      "-I/opt/homebrew/opt/openssl@3/include",
       "-pedantic",
       "-Wall",
       "-Wextra",
@@ -91,23 +80,20 @@
       "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
       "-I/Users/chriscabang/Workspace/blocky/inc",
       "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
-      "-g",
-      "-DDEBUG=1",
+      "-O2",
       "-fPIC",
       "-c",
       "-o",
-      "src/log.o",
+      "/Users/chriscabang/Workspace/blocky/build/release/log.o",
       "src/log.c"
     ],
     "directory": "/Users/chriscabang/Workspace/blocky",
     "file": "/Users/chriscabang/Workspace/blocky/src/log.c",
-    "output": "/Users/chriscabang/Workspace/blocky/src/log.o"
+    "output": "/Users/chriscabang/Workspace/blocky/build/release/log.o"
   },
   {
     "arguments": [
       "/usr/bin/gcc",
-      "-I/opt/homebrew/opt/binutils/include",
-      "-I/opt/homebrew/opt/openssl@3/include",
       "-pedantic",
       "-Wall",
       "-Wextra",
@@ -117,23 +103,20 @@
       "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
       "-I/Users/chriscabang/Workspace/blocky/inc",
       "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
-      "-g",
-      "-DDEBUG=1",
+      "-O2",
       "-fPIC",
       "-c",
       "-o",
-      "src/network.o",
+      "/Users/chriscabang/Workspace/blocky/build/release/network.o",
       "src/network.c"
     ],
     "directory": "/Users/chriscabang/Workspace/blocky",
     "file": "/Users/chriscabang/Workspace/blocky/src/network.c",
-    "output": "/Users/chriscabang/Workspace/blocky/src/network.o"
+    "output": "/Users/chriscabang/Workspace/blocky/build/release/network.o"
   },
   {
     "arguments": [
       "/usr/bin/gcc",
-      "-I/opt/homebrew/opt/binutils/include",
-      "-I/opt/homebrew/opt/openssl@3/include",
       "-pedantic",
       "-Wall",
       "-Wextra",
@@ -143,23 +126,20 @@
       "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
       "-I/Users/chriscabang/Workspace/blocky/inc",
       "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
-      "-g",
-      "-DDEBUG=1",
+      "-O2",
       "-fPIC",
       "-c",
       "-o",
-      "src/pos.o",
+      "/Users/chriscabang/Workspace/blocky/build/release/pos.o",
       "src/pos.c"
     ],
     "directory": "/Users/chriscabang/Workspace/blocky",
     "file": "/Users/chriscabang/Workspace/blocky/src/pos.c",
-    "output": "/Users/chriscabang/Workspace/blocky/src/pos.o"
+    "output": "/Users/chriscabang/Workspace/blocky/build/release/pos.o"
   },
   {
     "arguments": [
       "/usr/bin/gcc",
-      "-I/opt/homebrew/opt/binutils/include",
-      "-I/opt/homebrew/opt/openssl@3/include",
       "-pedantic",
       "-Wall",
       "-Wextra",
@@ -169,23 +149,20 @@
       "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
       "-I/Users/chriscabang/Workspace/blocky/inc",
       "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
-      "-g",
-      "-DDEBUG=1",
+      "-O2",
       "-fPIC",
       "-c",
       "-o",
-      "src/pow.o",
+      "/Users/chriscabang/Workspace/blocky/build/release/pow.o",
       "src/pow.c"
     ],
     "directory": "/Users/chriscabang/Workspace/blocky",
     "file": "/Users/chriscabang/Workspace/blocky/src/pow.c",
-    "output": "/Users/chriscabang/Workspace/blocky/src/pow.o"
+    "output": "/Users/chriscabang/Workspace/blocky/build/release/pow.o"
   },
   {
     "arguments": [
       "/usr/bin/gcc",
-      "-I/opt/homebrew/opt/binutils/include",
-      "-I/opt/homebrew/opt/openssl@3/include",
       "-pedantic",
       "-Wall",
       "-Wextra",
@@ -195,23 +172,20 @@
       "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
       "-I/Users/chriscabang/Workspace/blocky/inc",
       "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
-      "-g",
-      "-DDEBUG=1",
+      "-O2",
       "-fPIC",
       "-c",
       "-o",
-      "src/storage.o",
+      "/Users/chriscabang/Workspace/blocky/build/release/storage.o",
       "src/storage.c"
     ],
     "directory": "/Users/chriscabang/Workspace/blocky",
     "file": "/Users/chriscabang/Workspace/blocky/src/storage.c",
-    "output": "/Users/chriscabang/Workspace/blocky/src/storage.o"
+    "output": "/Users/chriscabang/Workspace/blocky/build/release/storage.o"
   },
   {
     "arguments": [
       "/usr/bin/gcc",
-      "-I/opt/homebrew/opt/binutils/include",
-      "-I/opt/homebrew/opt/openssl@3/include",
       "-pedantic",
       "-Wall",
       "-Wextra",
@@ -221,23 +195,43 @@
       "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
       "-I/Users/chriscabang/Workspace/blocky/inc",
       "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
-      "-g",
-      "-DDEBUG=1",
+      "-O2",
       "-fPIC",
       "-c",
       "-o",
-      "src/transaction.o",
+      "/Users/chriscabang/Workspace/blocky/build/release/transaction.o",
       "src/transaction.c"
     ],
     "directory": "/Users/chriscabang/Workspace/blocky",
     "file": "/Users/chriscabang/Workspace/blocky/src/transaction.c",
-    "output": "/Users/chriscabang/Workspace/blocky/src/transaction.o"
+    "output": "/Users/chriscabang/Workspace/blocky/build/release/transaction.o"
   },
   {
     "arguments": [
       "/usr/bin/gcc",
-      "-I/opt/homebrew/opt/binutils/include",
-      "-I/opt/homebrew/opt/openssl@3/include",
+      "-pedantic",
+      "-Wall",
+      "-Wextra",
+      "-march=native",
+      "-I/usr/local/include",
+      "-I/opt/homebrew/include",
+      "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
+      "-I/Users/chriscabang/Workspace/blocky/inc",
+      "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
+      "-O2",
+      "-fPIC",
+      "-c",
+      "-o",
+      "/Users/chriscabang/Workspace/blocky/build/release/main.o",
+      "src/main.c"
+    ],
+    "directory": "/Users/chriscabang/Workspace/blocky",
+    "file": "/Users/chriscabang/Workspace/blocky/src/main.c",
+    "output": "/Users/chriscabang/Workspace/blocky/build/release/main.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
       "-pedantic",
       "-Wall",
       "-Wextra",
@@ -248,15 +242,231 @@
       "-I/Users/chriscabang/Workspace/blocky/inc",
       "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
       "-g",
-      "-DDEBUG=1",
+      "-DDEBUG",
       "-fPIC",
       "-c",
       "-o",
-      "src/main.o",
+      "/Users/chriscabang/Workspace/blocky/build/debug/blockchain.o",
+      "src/blockchain.c"
+    ],
+    "directory": "/Users/chriscabang/Workspace/blocky",
+    "file": "/Users/chriscabang/Workspace/blocky/src/blockchain.c",
+    "output": "/Users/chriscabang/Workspace/blocky/build/debug/blockchain.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-pedantic",
+      "-Wall",
+      "-Wextra",
+      "-march=native",
+      "-I/usr/local/include",
+      "-I/opt/homebrew/include",
+      "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
+      "-I/Users/chriscabang/Workspace/blocky/inc",
+      "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
+      "-g",
+      "-DDEBUG",
+      "-fPIC",
+      "-c",
+      "-o",
+      "/Users/chriscabang/Workspace/blocky/build/debug/consensus.o",
+      "src/consensus.c"
+    ],
+    "directory": "/Users/chriscabang/Workspace/blocky",
+    "file": "/Users/chriscabang/Workspace/blocky/src/consensus.c",
+    "output": "/Users/chriscabang/Workspace/blocky/build/debug/consensus.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-pedantic",
+      "-Wall",
+      "-Wextra",
+      "-march=native",
+      "-I/usr/local/include",
+      "-I/opt/homebrew/include",
+      "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
+      "-I/Users/chriscabang/Workspace/blocky/inc",
+      "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
+      "-g",
+      "-DDEBUG",
+      "-fPIC",
+      "-c",
+      "-o",
+      "/Users/chriscabang/Workspace/blocky/build/debug/crypto.o",
+      "src/crypto.c"
+    ],
+    "directory": "/Users/chriscabang/Workspace/blocky",
+    "file": "/Users/chriscabang/Workspace/blocky/src/crypto.c",
+    "output": "/Users/chriscabang/Workspace/blocky/build/debug/crypto.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-pedantic",
+      "-Wall",
+      "-Wextra",
+      "-march=native",
+      "-I/usr/local/include",
+      "-I/opt/homebrew/include",
+      "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
+      "-I/Users/chriscabang/Workspace/blocky/inc",
+      "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
+      "-g",
+      "-DDEBUG",
+      "-fPIC",
+      "-c",
+      "-o",
+      "/Users/chriscabang/Workspace/blocky/build/debug/log.o",
+      "src/log.c"
+    ],
+    "directory": "/Users/chriscabang/Workspace/blocky",
+    "file": "/Users/chriscabang/Workspace/blocky/src/log.c",
+    "output": "/Users/chriscabang/Workspace/blocky/build/debug/log.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-pedantic",
+      "-Wall",
+      "-Wextra",
+      "-march=native",
+      "-I/usr/local/include",
+      "-I/opt/homebrew/include",
+      "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
+      "-I/Users/chriscabang/Workspace/blocky/inc",
+      "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
+      "-g",
+      "-DDEBUG",
+      "-fPIC",
+      "-c",
+      "-o",
+      "/Users/chriscabang/Workspace/blocky/build/debug/network.o",
+      "src/network.c"
+    ],
+    "directory": "/Users/chriscabang/Workspace/blocky",
+    "file": "/Users/chriscabang/Workspace/blocky/src/network.c",
+    "output": "/Users/chriscabang/Workspace/blocky/build/debug/network.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-pedantic",
+      "-Wall",
+      "-Wextra",
+      "-march=native",
+      "-I/usr/local/include",
+      "-I/opt/homebrew/include",
+      "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
+      "-I/Users/chriscabang/Workspace/blocky/inc",
+      "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
+      "-g",
+      "-DDEBUG",
+      "-fPIC",
+      "-c",
+      "-o",
+      "/Users/chriscabang/Workspace/blocky/build/debug/pos.o",
+      "src/pos.c"
+    ],
+    "directory": "/Users/chriscabang/Workspace/blocky",
+    "file": "/Users/chriscabang/Workspace/blocky/src/pos.c",
+    "output": "/Users/chriscabang/Workspace/blocky/build/debug/pos.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-pedantic",
+      "-Wall",
+      "-Wextra",
+      "-march=native",
+      "-I/usr/local/include",
+      "-I/opt/homebrew/include",
+      "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
+      "-I/Users/chriscabang/Workspace/blocky/inc",
+      "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
+      "-g",
+      "-DDEBUG",
+      "-fPIC",
+      "-c",
+      "-o",
+      "/Users/chriscabang/Workspace/blocky/build/debug/pow.o",
+      "src/pow.c"
+    ],
+    "directory": "/Users/chriscabang/Workspace/blocky",
+    "file": "/Users/chriscabang/Workspace/blocky/src/pow.c",
+    "output": "/Users/chriscabang/Workspace/blocky/build/debug/pow.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-pedantic",
+      "-Wall",
+      "-Wextra",
+      "-march=native",
+      "-I/usr/local/include",
+      "-I/opt/homebrew/include",
+      "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
+      "-I/Users/chriscabang/Workspace/blocky/inc",
+      "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
+      "-g",
+      "-DDEBUG",
+      "-fPIC",
+      "-c",
+      "-o",
+      "/Users/chriscabang/Workspace/blocky/build/debug/storage.o",
+      "src/storage.c"
+    ],
+    "directory": "/Users/chriscabang/Workspace/blocky",
+    "file": "/Users/chriscabang/Workspace/blocky/src/storage.c",
+    "output": "/Users/chriscabang/Workspace/blocky/build/debug/storage.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-pedantic",
+      "-Wall",
+      "-Wextra",
+      "-march=native",
+      "-I/usr/local/include",
+      "-I/opt/homebrew/include",
+      "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
+      "-I/Users/chriscabang/Workspace/blocky/inc",
+      "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
+      "-g",
+      "-DDEBUG",
+      "-fPIC",
+      "-c",
+      "-o",
+      "/Users/chriscabang/Workspace/blocky/build/debug/transaction.o",
+      "src/transaction.c"
+    ],
+    "directory": "/Users/chriscabang/Workspace/blocky",
+    "file": "/Users/chriscabang/Workspace/blocky/src/transaction.c",
+    "output": "/Users/chriscabang/Workspace/blocky/build/debug/transaction.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-pedantic",
+      "-Wall",
+      "-Wextra",
+      "-march=native",
+      "-I/usr/local/include",
+      "-I/opt/homebrew/include",
+      "-fmacro-prefix-map=/Users/chriscabang/Workspace/blocky=.",
+      "-I/Users/chriscabang/Workspace/blocky/inc",
+      "-I/Users/chriscabang/Workspace/blocky/../libs/liboqs/build/include",
+      "-g",
+      "-DDEBUG",
+      "-fPIC",
+      "-c",
+      "-o",
+      "/Users/chriscabang/Workspace/blocky/build/debug/main.o",
       "src/main.c"
     ],
     "directory": "/Users/chriscabang/Workspace/blocky",
     "file": "/Users/chriscabang/Workspace/blocky/src/main.c",
-    "output": "/Users/chriscabang/Workspace/blocky/src/main.o"
+    "output": "/Users/chriscabang/Workspace/blocky/build/debug/main.o"
   }
 ]
