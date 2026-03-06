@@ -1273,16 +1273,24 @@ Two header files were present in `inc/` that were either completely unused or co
 
 **`inc/iterator.h`:** Deleted. Block traversal is done via `Block.next` directly. If a proper iterator abstraction is needed in the future, it should be implemented as `iterator.c` + `iterator.h` together, with tests.
 
-**`inc/common.h`:** Rewritten:
-- `Info` → `log_info`, `Warn` → `log_warn` (uses the actual log macros).
-- `CHECKNULL(x)` and `CHECKZERO(x)` now call `FAIL(x)` — they set `STATUS = EXIT_FAILURE` and `break` out of the `START` scope.
-- Macro hygiene: `!x` → `!(x)`, `x == 0` → `(x) == 0`.
-- Warning comment added: do not use `CHECKNULL` / `CHECKZERO` / `FAIL` inside a nested `for`/`while` loop within a `START` block — `break` exits the innermost enclosing loop, not the `START` scope.
+**`inc/common.h`:** Initially rewritten (fixed `Info`/`Warn` refs, corrected `CHECKNULL`/`CHECKZERO` to call `FAIL`), then **deleted** — see follow-up analysis below.
+
+### Follow-up: common.h Deleted
+
+After the rewrite, a full applicability audit across all source files showed that the `START`/`FAIL`/`RETURN` macros cannot be safely applied to any existing function because:
+
+1. **Resource cleanup** — `storage.c`, `chain.c`, `transaction.c`, and `main.c` all acquire heap, file, or OQS objects mid-function. `FAIL` breaks out immediately, skipping cleanup and causing leaks.
+2. **Loops with internal checks** — `chain_validate`, `cmd_log`, `storage_scan` have failure checks inside `for`/`while` loops; `FAIL` would break the loop, not the `START` scope.
+3. **Return type mismatches** — several functions return `Block*`, `void`, or custom exit codes (`0`/`1`/`2`); `RETURN` (which returns `int STATUS`) is wrong for all of them.
+4. **Log noise** — `START` emits `log_info("Start >")` on every call, making it unsuitable for library functions called frequently (e.g. `block_verify_hash`, `storage_read`).
+5. **Zero consumers** — `common.h` was never `#include`d anywhere.
+
+Conclusion: the macros have a contract too narrow for the existing codebase and add file footprint with no benefit. Deleted entirely.
 
 ### Files Changed
 
 | File | Change |
 |---|---|
 | `inc/iterator.h` | Deleted — no implementation, no consumers |
-| `inc/common.h` | Rewritten — fixed `Info`/`Warn` refs, `CHECKNULL`/`CHECKZERO` now properly call `FAIL` |
+| `inc/common.h` | Deleted — zero consumers; macro contract incompatible with existing code |
 
