@@ -43,8 +43,7 @@ static FILE *capture_log_to_file(void (*emit_fn)(void)) {
     return fopen(TEST_LOG_FILE, "r");
 }
 
-static void emit_info(void)  { log_info("Test log message to file"); }
-static void emit_error(void) { log_error("Test error message"); }
+static void emit_info(void) { log_info("Test log message to file"); }
 
 /* ── setup / teardown ─────────────────────────────────────────────────── */
 
