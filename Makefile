@@ -50,7 +50,7 @@ LDFLAGS  += -L$(LIBS)/liboqs/build/lib -loqs
 
 .DEFAULT_GOAL = all
 
-.PHONY: all release debug test coverage clean help
+.PHONY: all release debug test coverage check clean help
 
 all: release debug
 
@@ -187,6 +187,16 @@ coverage: $(COV_BIN)
 		echo "    brew install lcov"; \
 	fi
 
+# ── check ────────────────────────────────────────────────────────────────────
+#
+# Full validation: run the test suite (fast, debug objects) then rebuild with
+# --coverage and report line coverage.
+#
+# Use make test  alone during development for rapid feedback.
+# Use make check before tagging a release or when auditing coverage gaps.
+#
+check: test coverage
+
 clean:
 	rm -rf $(BUILD)
 	rm -rf .chain
@@ -202,7 +212,8 @@ help:
 	@echo "  release   Build optimized binary (-O2) -> build/$(PROJECT)"
 	@echo "  debug     Build debug binary (-g -DDEBUG) -> build/$(PROJECT)-debug"
 	@echo "  test      Build and run all test suites; print aggregated summary"
-	@echo "  coverage  Run tests with --coverage; report line coverage per file"
+	@echo "  coverage  Rebuild with --coverage; report line coverage per file"
 	@echo "              (brew install lcov for full report + HTML output)"
+	@echo "  check     Run both test and coverage (full validation)"
 	@echo "  clean     Remove build artifacts and .chain data"
 	@echo "  help      Show this help message"
