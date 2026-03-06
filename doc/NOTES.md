@@ -853,3 +853,300 @@ This separates concerns: `test_chain.c` tests chain mechanics (link rules, pool,
 | `tests/test_consensus.c` | New: 8 tests for verify_consensus and verify_block_signature |
 
 ---
+
+## ADR-011: Log Module Rewrite — Heisenbug-Safe, Level-Gated, Secure
+
+**Date:** 2026-03
+**Status:** Adopted
+**Files:** `inc/log.h`, `src/log.c`, `tests/test_log.c`
+
+### Context — Problems Found in Original log.h / log.c
+
+A review of the logging module against the goals of zero latency impact and no heisenbugs found the following defects:
+
+| Issue | Impact | Detail |
+|---|---|---|
+| `malloc` on every log call | Heisenbug risk, crash risk | Heap allocation changes memory layout across every log call, altering pointer values and padding. Any bug that only manifests when the heap is laid out a certain way will appear or disappear depending on log verbosity. A `malloc` failure also silently dropped the message with no NULL check. |
+| Mutex held for entire I/O including `fflush` | Latency, thread scheduling change | All other threads were blocked while a single log call formatted text, wrote to disk, and flushed. `fflush` is a synchronous kernel call; holding the mutex during it serialises the mining loop. |
+| `fflush` after every write | Latency | Forced a kernel write barrier after every INFO and DEBUG message. INFO is emitted frequently (every block hash, every storage insert); flushing every one adds measurable latency to the chain operations path. |
+| `ENABLED` macro computed but never used | Correctness | The expression `(level <= LOG_LEVEL_INFO)` was evaluated and discarded. No runtime level filtering occurred. |
+| `DEBUG` guard broken | Correctness | All four macros (`log_error`, `log_warn`, `log_info`, `log_debug`) always expanded to a `log_write()` call regardless of whether `-DDEBUG` was set. `log_debug` emitted output in release builds. |
+| Source paths / function names in release | Security | Production logs must not expose internal code structure (file paths, function names, line numbers) to operators, log aggregators, or anyone with access to the log stream. |
+| `(fmt, ...) + ##__VA_ARGS__` GNU extension | Portability | The `##__VA_ARGS__` token-pasting extension (removes preceding comma when variadic list is empty) triggered `-Wvariadic-macro-arguments-omitted` at every call site that passed only a format string. The pragma guards in `log.h` covered the definition but not the expansion sites. |
+
+### Decision — Stack-Only Formatting, Minimal Critical Section
+
+All formatting (timestamp, source location, user message, assembled line) happens on the calling thread's stack before the mutex is acquired. The mutex is held only for `fprintf` and the conditional `fflush`:
+
+```
+caller thread:
+  ① level gate (one comparison, no lock, no allocation)
+  ② format timestamp              — stack, no lock
+  ③ format source location        — stack, no lock
+  ④ vsnprintf user message        — stack, no lock
+  ⑤ assemble full line            — stack, no lock
+  ⑥ pthread_mutex_lock
+  ⑦ fprintf(log_stream, ...)      — I/O, lock held
+  ⑧ fflush (ERROR/WARN only)      — conditional, lock held
+  ⑨ pthread_mutex_unlock
+```
+
+No `malloc` or `free` anywhere in the call path. All buffers are fixed-size stack variables. The heap layout is identical whether logging is active or suppressed — heisenbugs caused by log-dependent memory layout are eliminated by construction.
+
+### Decision — Level Gate
+
+The first operation in `log_write` is a single comparison against `log_level` with no lock:
+
+```c
+if (level > log_level) return;
+```
+
+Filtered messages cost one integer comparison on the calling thread and nothing else. No stack allocation, no mutex touch, no formatting work.
+
+### Decision — fflush Policy
+
+`fflush` is called only when `level <= LOG_LEVEL_WARN`:
+
+- **ERROR, WARN** — flushed immediately. Critical failures and anomalies must reach the operator even if the process crashes shortly after.
+- **INFO, DEBUG** — left in the OS write buffer. INFO is emitted on every block hash and storage insert; synchronous flushing after every INFO would serialise the mining loop and chain operations.
+
+### Decision — Runtime Level Control
+
+```c
+void log_set_level(int level);
+```
+
+Sets the minimum severity threshold at runtime. **ERROR and WARN cannot be suppressed**: `log_set_level` clamps the minimum to `LOG_LEVEL_WARN`. Operators running high-throughput nodes can silence INFO to reduce I/O without losing consensus failure visibility.
+
+| Constant | Value | Compiled | Suppressible |
+|---|---|---|---|
+| `LOG_LEVEL_ERROR` | 0 | Always | No (always visible) |
+| `LOG_LEVEL_WARN` | 1 | Always | No (minimum clamp) |
+| `LOG_LEVEL_INFO` | 2 | Always | Yes (via `log_set_level`) |
+| `LOG_LEVEL_DEBUG` | 3 | Debug only | N/A — `((void)0)` in release |
+
+### Decision — Compile-Time DEBUG Guard
+
+In release builds, `log_debug(...)` expands to `((void)0)`. The compiler emits zero instructions: no stack frame, no register spill, no heap touch, no thread scheduling impact. This is the correct fix for debug-induced heisenbugs — the binary is identical to one that never had `log_debug` calls.
+
+```c
+#if defined(DEBUG)
+#define log_debug(...) \
+    log_write(LOG_LEVEL_DEBUG, "DEBUG", __FILE__, __func__, __LINE__, __VA_ARGS__)
+#else
+#define log_debug(...) ((void)0)
+#endif
+```
+
+### Decision — Release Builds Omit Source Location
+
+In release builds, `__FILE__`, `__func__`, and `__LINE__` are replaced with `NULL, NULL, 0`:
+
+```c
+/* Release */
+#define log_error(...) \
+    log_write(LOG_LEVEL_ERROR, "ERROR", NULL, NULL, 0, __VA_ARGS__)
+```
+
+`log_write` checks `if (file && func)` before formatting the source location field. Release log lines contain only the timestamp, level, and message. Internal source paths and function names are never written to log streams that may be forwarded to external systems.
+
+### Decision — `(...)` / `__VA_ARGS__` Pattern
+
+All log macros use `(...)` instead of `(fmt, ...)` and `__VA_ARGS__` instead of `##__VA_ARGS__`. With `(...)`, the format string itself is the first element of the variadic pack — `__VA_ARGS__` is never empty. This eliminates the GNU extension entirely, removing the pragma guards from `log.h` and the `-Wvariadic-macro-arguments-omitted` warning from all call sites.
+
+### Decision — Remote Monitoring via Named Pipe
+
+`log_set_stream(FILE *stream)` accepts any `FILE*`, including one opened on a FIFO:
+
+```c
+log_set_stream(fopen("/tmp/blocky.log", "w"));
+// shell: cat /tmp/blocky.log | ssh user@monitor ...
+```
+
+A dedicated **TCP/UDP logging port is not recommended**. It exposes real-time mining state (nonce trajectory, block solve timing, hash rate) to unauthenticated network observers, enabling timing attacks and selfish-mining intelligence gathering. Named pipe or log file forwarded over an authenticated channel (SSH, TLS) is the correct approach.
+
+### Security Policy
+
+`NEVER` pass private keys, VRF secrets, seed material, Dilithium secret keys, or session tokens to any log macro. Log output may be written to shared storage or forwarded to external systems — treat all log content as public. Source paths and function names are omitted in release builds to avoid leaking internal code structure.
+
+### Test Coverage (`tests/test_log.c`) — 8 tests across 3 groups
+
+| Group | Test | Verifies |
+|---|---|---|
+| `log/stream` | `test_log_to_terminal` | `log_set_stream(stdout)` routes output; "INFO" appears in pipe-captured output |
+| `log/stream` | `test_log_to_file` | `log_set_stream(file)` writes "INFO" and the message text |
+| `log/level` | `test_info_suppressed_below_threshold` | INFO produces zero bytes when threshold is WARN |
+| `log/level` | `test_error_never_suppressed` | ERROR appears even when threshold is WARN |
+| `log/level` | `test_warn_visible_at_warn_threshold` | WARN appears when threshold is WARN |
+| `log/level` | `test_level_clamped_at_warn_minimum` | `log_set_level(ERROR)` is clamped to WARN; WARN still appears |
+| `log/format` | `test_debug_build_includes_source_location` | Debug build includes filename and function name in output |
+| `log/format` | `test_timestamp_present` | Timestamp prefix `[20...` appears on every log line |
+
+### Files Changed
+
+| File | Change |
+|---|---|
+| `inc/log.h` | Full rewrite: level constants, `log_set_level`, fixed DEBUG guard, `(...)/__VA_ARGS__` pattern, security documentation |
+| `src/log.c` | Full rewrite: stack-only buffers, level gate, format outside mutex, fflush on ERROR/WARN only, `log_set_stream` mutex-protected |
+| `tests/test_log.c` | Updated: setup/teardown per test, 4 new level tests, 2 format tests |
+
+---
+
+## ADR-012: Integration Tests — Payment and Miner Use Cases
+
+**Date:** 2026-03
+**Status:** Adopted
+**Files:** `tests/test_integration_payment.c`, `tests/test_integration_miner.c`
+
+### Context
+
+Unit tests cover individual modules in isolation (`test_block.c`, `test_chain.c`, etc.). Integration tests are needed to verify that the modules compose correctly under realistic end-to-end scenarios matching real user workflows. Two primary use cases were identified:
+
+1. **Payment user** — sends tokens from one address to another, commits to the chain, and can verify the on-chain record.
+2. **Miner** — mines blocks with PoW, grows the chain, and the chain correctly rejects invalid blocks.
+
+### Decision — Test Against the Library API Directly
+
+Integration tests call the C library API (`chain.h`, `block.h`, `storage.h`, `pow.h`, `consensus.h`) directly, not through the CLI binary. This:
+- Exercises the same code path as `cmd_send` + `cmd_commit` without depending on CLI parsing.
+- Makes failures deterministic — no subprocess, no shell, no environment dependency.
+- Runs at the same speed as unit tests.
+
+### Decision — Mine at `DIFFICULTY=4` in Integration Tests
+
+Each test that produces a valid PoW block calls `mine_block(b, DIFFICULTY)` (DIFFICULTY=4, defined in `pow.h`). At 4 leading hex zeros, average hash count is ~65,000 per block. Three consecutive mines complete in well under one second on any modern CPU.
+
+### Decision — Tamper Detection Scope
+
+`block_verify_hash()` (called by `verify_consensus` for all block types) recomputes the hash over the block **header fields**: `index`, `timestamp`, `previous_hash`, `merkle_root`, `nonce`, `consensus`. It does **not** re-verify raw transaction bytes against the Merkle root.
+
+Consequences:
+- Tampering any **header field** (including `merkle_root`) after mining is detected.
+- Tampering a **transaction field** (e.g., `amount`) after computing the Merkle root but before `chain_add` is also detected, because `compute_merkle_root` hashes all transaction fields into `merkle_root`, and the stored hash covers `merkle_root`.
+- Tampering a transaction field **after** `chain_add` (i.e., in the stored copy) is not caught by `block_verify_hash` — it would require re-running `compute_merkle_root` and comparing. This is a known limitation; full Merkle re-verification is future work.
+
+The integration test `test_tampered_merkle_root_rejected` validates tamper detection by flipping a byte in `b->merkle_root` before `chain_add`, which correctly triggers rejection.
+
+### Test Coverage — Payment (`tests/test_integration_payment.c`) — 6 tests across 4 groups
+
+| Group | Test | Scenario |
+|---|---|---|
+| `payment/send` | `test_alice_sends_50_to_bob` | Full PoW payment flow; stored block has correct sender, recipient, amount |
+| `payment/send` | `test_chain_tip_advances_after_payment` | In-memory and on-disk HEAD both advance to the payment block |
+| `payment/batch` | `test_three_payments_in_one_block` | Three transactions in one block; all retrieved in order |
+| `payment/multi_block` | `test_two_payment_blocks_in_sequence` | Block 2 correctly links to Block 1; both independently readable |
+| `payment/invalid` | `test_zero_amount_transfer_rejected` | `amount=0` fails `chain_validate` before consensus check |
+| `payment/invalid` | `test_tampered_merkle_root_rejected` | Flipping `merkle_root[0]` after mining causes `chain_add` to return `EXIT_FAILURE` |
+
+### Test Coverage — Miner (`tests/test_integration_miner.c`) — 9 tests across 3 groups
+
+| Group | Test | Scenario |
+|---|---|---|
+| `miner/proof_of_work` | `test_mine_block_returns_success` | `mine_block` returns `EXIT_SUCCESS`; hash has DIFFICULTY leading `'0'` chars; full 64-char hex string |
+| `miner/proof_of_work` | `test_mined_block_passes_pow_validation` | `validate_block_pow(b, DIFFICULTY)` returns `EXIT_SUCCESS` |
+| `miner/proof_of_work` | `test_mined_block_accepted_by_chain` | `chain_add` advances in-memory tip and on-disk HEAD |
+| `miner/proof_of_work` | `test_miner_includes_transactions` | Block with one transaction accepted; transaction retrievable from storage |
+| `miner/chain_growth` | `test_mine_three_consecutive_blocks` | Chain tip at index 3; all three blocks independently readable |
+| `miner/chain_growth` | `test_chain_link_integrity` | `b1.previous_hash == genesis.hash`; `b2.previous_hash == b1.hash` |
+| `miner/security` | `test_unmined_pow_block_rejected` | `block_compute_hash` (no mining) produces no leading zeros; rejected by `chain_add` |
+| `miner/security` | `test_tampered_hash_after_mining_rejected` | Flipping `hash[8]` after mining triggers `block_verify_hash` mismatch |
+| `miner/security` | `test_wrong_previous_hash_rejected` | Mined block pointing to wrong previous hash fails the link check in `chain_validate` |
+
+### Files Added
+
+| File | Content |
+|---|---|
+| `tests/test_integration_payment.c` | 6 tests: payment send, batch, multi-block, invalid |
+| `tests/test_integration_miner.c` | 9 tests: PoW correctness, chain growth, security rejection |
+
+---
+
+## ADR-013: Build System — Aggregated Test Summary and Coverage Target
+
+**Date:** 2026-03
+**Status:** Adopted
+**Files:** `Makefile`
+
+### Context
+
+`make test` ran every test binary and reported only a per-suite pass/fail exit code. There was no aggregated count of individual tests passed or failed across all suites, making it hard to gauge overall test health at a glance. There was also no coverage instrumentation in the build system.
+
+### Decision — Aggregated Summary in `make test`
+
+After all test binaries have run, `make test` prints a table sourced from cmocka's group-summary lines (`[  PASSED  ] N test(s).` and `[  FAILED  ] N test(s).`):
+
+```
+  Suite                                    Passed  Failed   Total
+  ──────────────────────────────────────────────────────────────
+  test_block                                   12       0      12
+  test_chain                                   15       0      15
+  test_consensus                                8       0       8
+  test_crypto                                  20       0      20
+  test_integration_miner                        9       0       9
+  test_integration_payment                      6       0       6
+  test_log                                      8       0       8
+  test_main                                    24       0      24
+  test_pos                                     12       0      12
+  test_pow                                     13       0      13
+  test_storage                                 26       0      26
+  test_transaction                             15       0      15
+  ──────────────────────────────────────────────────────────────
+  TOTAL                                       168       0     168
+
+  All 168 tests passed.
+```
+
+Key behaviours preserved from the original:
+- Every suite runs even if earlier ones fail (failures accumulate).
+- Non-zero exit from any suite still causes `make test` to return non-zero.
+- Output from each suite is shown before the summary (suite output feeds forward as it completes, not held until the end).
+
+### Decision — Separate `make coverage` Target
+
+A new `coverage` target builds all source and test files with `--coverage` (gcov-compatible profiling) into a separate `build/cov/` tree. This keeps the normal debug build unaffected — `build/debug/` objects are never instrumented.
+
+Build layout:
+
+```
+build/cov/
+  src/          ← instrumented source objects (.o + .gcno)
+  tests/        ← instrumented test objects (.o + .gcno)
+  test_*        ← instrumented test binaries
+  coverage.info ← lcov capture (if lcov installed)
+  html/         ← genhtml output (if lcov installed)
+```
+
+After running all test binaries, the coverage report is produced:
+
+- **With `lcov` installed** (`brew install lcov`): runs `lcov --capture`, strips system headers and test files, prints `lcov --summary`, and generates an HTML report at `build/cov/html/index.html`.
+- **Without `lcov`**: runs `gcov -o build/cov/src/ src/*.c` and prints per-file line coverage from the gcov output. Prompts the user to install lcov for a full report.
+
+### Coverage Baseline (2026-03)
+
+Coverage measured against all 168 tests:
+
+| File | Line Coverage |
+|---|---|
+| `src/block.c` | 100% of 26 lines |
+| `src/consensus.c` | 100% of 25 lines |
+| `src/sha256.c` | 100% of 68 lines |
+| `src/pow.c` | 96.5% of 57 lines |
+| `src/log.c` | 97.1% of 34 lines |
+| `src/pos.c` | 91.9% of 37 lines |
+| `src/storage.c` | 82.2% of 197 lines |
+| `src/crypto.c` | 80.0% of 55 lines |
+| `src/transaction.c` | 78.8% of 33 lines |
+| `src/chain.c` | 60.9% of 138 lines |
+| `src/network.c` | 0% of 58 lines |
+
+Notable gaps:
+- **`chain.c` (60.9%)** — `chain_propose()` stub, GHOST fork-choice paths, and some error branches in `chain_validate` are not yet exercised.
+- **`network.c` (0%)** — Network module has no tests. The module is a stub pending P2P implementation (ADR-001).
+
+### Files Changed
+
+| File | Change |
+|---|---|
+| `Makefile` | Added `COV_*` variables and build rules for `build/cov/`; rewrote `test` target shell to capture output and print summary; added `coverage` phony target |
+
+---
