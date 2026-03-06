@@ -1,8 +1,5 @@
-/**
- * @file log.h
- * @brief Implements a simple logging utility.
- *
- */
+/* log.c — Logging implementation: stack-only, level-gated, brief mutex. */
+#include "log.h"
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -10,62 +7,126 @@
 #include <string.h>
 #include <time.h>
 
-#include "log.h"
+/* ── Module state ─────────────────────────────────────────────────────── */
 
 FILE *log_stream = NULL;
+
+/*
+ * log_level: runtime severity threshold.
+ *
+ * volatile: ensures the compiler reloads the value on every read across
+ * threads without recompilation. On all target platforms (x86, ARM/RPi),
+ * aligned 32-bit reads/writes are atomic, so a torn read during a level
+ * change would at worst let one extra message through or drop one — both
+ * acceptable. The mutex in log_set_level serialises writes.
+ */
+static volatile int log_level = LOG_DEFAULT_LEVEL;
+
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// :TODO: use shared memory to stream logs to the pipe. is that a good idea?
-// :TODO: create log telemetry for the chain
-// :TODO: change this to "trace"
+/* ── Public API ───────────────────────────────────────────────────────── */
+
 void log_set_stream(FILE *stream) {
-  log_stream = (stream != NULL) ? stream : stderr;
+    pthread_mutex_lock(&log_mutex);
+    log_stream = (stream != NULL) ? stream : stderr;
+    pthread_mutex_unlock(&log_mutex);
 }
 
-/*static void __attribute__((used))*/
-void log_write(const char *level, const char *file, const char *func, int line,
+void log_set_level(int level) {
+    /*
+     * ERROR and WARN are never suppressed: clamp minimum to LOG_LEVEL_WARN.
+     * This guarantees consensus failures and rejected blocks always reach
+     * the operator regardless of configuration.
+     */
+    if (level < LOG_LEVEL_WARN)  level = LOG_LEVEL_WARN;
+    if (level > LOG_LEVEL_DEBUG) level = LOG_LEVEL_DEBUG;
+    pthread_mutex_lock(&log_mutex);
+    log_level = level;
+    pthread_mutex_unlock(&log_mutex);
+}
+
+/* ── Internal write ───────────────────────────────────────────────────── */
+
+void log_write(int level, const char *level_str,
+               const char *file, const char *func, int line,
                const char *fmt, ...) {
-  struct timespec ts;
-  struct tm tm_info;
-  char log_buffer[LOG_BUFFER_SIZE];
-  char timestamp[32] = "";
-  va_list args;
+    /*
+     * ① Level gate — fast path, no lock, no allocation.
+     *   Filtered messages cost one comparison on the calling thread.
+     *   This is the primary performance guard for high-frequency paths
+     *   (chain_validate, storage operations).
+     */
+    if (level > log_level) return;
 
-  pthread_mutex_lock(&log_mutex);
+    /*
+     * ② Format everything on the caller's stack — no malloc, no heap touch.
+     *    All work below happens BEFORE acquiring the mutex, so other threads
+     *    are not blocked while this thread formats timestamps or messages.
+     */
 
-  if (!log_stream) {
-    log_stream = stderr;
-  }
+    /* Timestamp. */
+    char timestamp[32] = "";
+    struct timespec ts;
+    struct tm       tm_info;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    localtime_r(&ts.tv_sec, &tm_info);
+    snprintf(timestamp, sizeof(timestamp),
+             "[%04d-%02d-%02d %02d:%02d:%02d.%03ld] ",
+             tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
+             tm_info.tm_hour,        tm_info.tm_min,      tm_info.tm_sec,
+             ts.tv_nsec / 1000000L);
 
-  clock_gettime(CLOCK_REALTIME, &ts);
-  localtime_r(&ts.tv_sec, &tm_info);
+    /*
+     * Source location — present only in debug builds (file/func are NULL in
+     * release macros). Truncated to 48 chars to keep lines readable.
+     * Stack buffer: no malloc, heap layout unchanged.
+     */
+    char source[64] = "";
+    if (file && func)
+        snprintf(source, sizeof(source), "%s:%s", file, func);
 
-#if LOG_USE_DATE
-  snprintf(timestamp, sizeof(timestamp),
-           "[%04d-%02d-%02d %02d:%02d:%02d.%03ld] ", tm_info.tm_year + 1900,
-           tm_info.tm_mon + 1, tm_info.tm_mday, tm_info.tm_hour, tm_info.tm_min,
-           tm_info.tm_sec, ts.tv_nsec / 1000000);
-#endif
+    /* User message — truncated to LOG_BUFFER_SIZE if necessary. */
+    char msg[LOG_BUFFER_SIZE];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
 
-  // Create a string with the source file and function name
-  char *source_file = malloc(strlen(file) + strlen(func) + 1);
-  snprintf(source_file, strlen(file) + strlen(func) + 2, "%s:%s", file, func);
+    /*
+     * Assembled line.
+     * Debug format:   [timestamp] LEVEL  source:func              @ Ln.N: msg
+     * Release format: [timestamp] LEVEL  msg
+     *
+     * Sizing: timestamp(27) + level(5) + source(40) + " @ Ln.NNN: "(12) +
+     *         msg(512) = 596 < LOG_BUFFER_SIZE + 128 (640). No truncation for
+     *         typical messages.
+     */
+    char line_buf[LOG_BUFFER_SIZE + 128];
+    if (source[0] != '\0') {
+        snprintf(line_buf, sizeof(line_buf),
+                 "%s%-5s %-40s @ Ln.%d: %s",
+                 timestamp, level_str, source, line, msg);
+    } else {
+        snprintf(line_buf, sizeof(line_buf),
+                 "%s%-5s %s",
+                 timestamp, level_str, msg);
+    }
 
-  // Format the log message
-  va_start(args, fmt);
-  int log_len =
-      snprintf(log_buffer, sizeof(log_buffer),
-               "%s%-5s %-32s @ Ln.%d: ", timestamp, level, source_file, line);
-  vsnprintf(log_buffer + log_len, sizeof(log_buffer) - log_len, fmt, args);
-  va_end(args);
-
-  // Print the log message to the log stream
-  fprintf(log_stream, "%s\n", log_buffer);
-  fflush(log_stream);
-
-  // cleanup
-  free(source_file);
-  source_file = NULL;
-
-  pthread_mutex_unlock(&log_mutex);
+    /*
+     * ③ Write — mutex held only for fprintf + conditional fflush.
+     *    This is the minimal critical section: no formatting, no syscalls
+     *    other than the write itself.
+     *
+     *    fflush on ERROR and WARN only:
+     *      Critical messages must reach the operator immediately even if the
+     *      process crashes shortly after. INFO and DEBUG are left in the OS
+     *      write buffer for throughput — they will be flushed on process exit
+     *      or when the buffer fills. This eliminates fflush as a latency
+     *      source for the mining loop and chain operations.
+     */
+    pthread_mutex_lock(&log_mutex);
+    if (!log_stream) log_stream = stderr;
+    fprintf(log_stream, "%s\n", line_buf);
+    if (level <= LOG_LEVEL_WARN) fflush(log_stream);
+    pthread_mutex_unlock(&log_mutex);
 }

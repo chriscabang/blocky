@@ -1,13 +1,13 @@
 #include <stdarg.h>
 #include <stddef.h>
 
-#if defined (__clang__)
+#if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
 #endif
 #include <setjmp.h>
 #include <cmocka.h>
-#if defined (__clang__)
+#if defined(__clang__)
 #pragma clang diagnostic pop
 #endif
 
@@ -19,106 +19,279 @@
 #include "log.h"
 
 #define assert_string_contains(haystack, needle) \
-  assert_true(strstr((haystack), (needle)) != NULL)
+    assert_true(strstr((haystack), (needle)) != NULL)
+
+#define assert_string_not_contains(haystack, needle) \
+    assert_true(strstr((haystack), (needle)) == NULL)
+
 #define TEST_LOG_FILE "test_output.log"
 
-/* Test logging to terminal */
-static void log_to_terminal(void **state) {
-  (void) state; // Suppress unused variable warning
+/* ── helpers ──────────────────────────────────────────────────────────── */
 
-  // Create a pipe to capture the output
-  // pipefd[1] is the write end, pipefd[0] is the read end
-  int pipefd[2];
-  if (pipe(pipefd) == -1) {
-    fail_msg("Failed to create pipe");
-  }
-
-  // Backup the original stdout
-  int stdout_fd = dup(STDOUT_FILENO);
-  if (stdout_fd == -1) {
-    fail_msg("Failed to duplicate stdout");
-  }
-
-  // Redirect stdout to the write end of the pipe
-  if (dup2(pipefd[1], STDOUT_FILENO) == -1) {
-    fail_msg("Failed to redirect stdout");
-  }
-  close(pipefd[1]);
-
-  // Set the log stream to stdout
-  log_set_stream(stdout);
-
-  // Log a message test to the terminal
-  log_info("Test log message to terminal");
-
-  printf("log_stream: %p\n", (void*) log_stream);
-
-  // Read from the read end of the pipe
-  char buffer[LOG_BUFFER_SIZE] = {0};
-  ssize_t bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1);
-  if (bytes_read < 0) {
-    fail_msg("Failed to read from pipe");
-  }
-  buffer[bytes_read] = '\0';
-
-  // Restore stdout
-  if (dup2(stdout_fd, STDOUT_FILENO) == -1) {
-    fail_msg("Failed to restore stdout");
-  }
-  close(stdout_fd);
-
-  assert_string_contains(buffer, "INFO");
+/*
+ * Open TEST_LOG_FILE for writing, redirect log output there, log one INFO
+ * message, close the file, reopen it for reading and return the FILE*.
+ * Caller must fclose() the returned handle and unlink TEST_LOG_FILE.
+ */
+static FILE *capture_log_to_file(void (*emit_fn)(void)) {
+    FILE *w = fopen(TEST_LOG_FILE, "w");
+    if (!w) fail_msg("cannot open test log file for writing");
+    log_set_stream(w);
+    emit_fn();
+    fclose(w);
+    log_set_stream(stderr); /* restore so later tests are not redirected */
+    return fopen(TEST_LOG_FILE, "r");
 }
 
-/* Test logging to file */
-static void log_to_file(void **state) {
-  (void)state; // Suppress unused variable warning
+static void emit_info(void)  { log_info("Test log message to file"); }
+static void emit_error(void) { log_error("Test error message"); }
 
-  // Create a mock stream to write to a file
-  FILE *mock_stream = fopen(TEST_LOG_FILE, "w");
-  if (!mock_stream) {
-    fail_msg("Failed to open log file for writing");
-  }
+/* ── setup / teardown ─────────────────────────────────────────────────── */
 
-  // Set the log stream to the mock stream
-  log_set_stream(mock_stream);
-
-  // Log a message test to the file
-  log_info("Test log message to file");
-
-  fclose(mock_stream);
-
-  // Reopen the file to read the contents
-  FILE *file = fopen(TEST_LOG_FILE, "r");
-  if (!file) {
-    fail_msg("Failed to open log file for reading");
-  }
-
-  // Read the first line of the file
-  char line[LOG_BUFFER_SIZE];
-  fgets(line, sizeof(line), file);
-  fclose(file);
-
-  // Check if the line contains the expected log message
-  assert_string_contains(line, "INFO");
-  assert_string_contains(line, "Test log message to file");
+static int setup(void **state) {
+    (void)state;
+    /* Reset to defaults before every test. */
+    log_set_stream(stderr);
+    log_set_level(LOG_DEFAULT_LEVEL);
+    return 0;
 }
 
-/* Main function to run the tests */
+static int teardown(void **state) {
+    (void)state;
+    log_set_stream(stderr);
+    log_set_level(LOG_DEFAULT_LEVEL);
+    remove(TEST_LOG_FILE);
+    return 0;
+}
+
+/* ── log/stream ───────────────────────────────────────────────────────── */
+
+/*
+ * Redirect stdout to a pipe, call log_info, verify "INFO" appears.
+ * Tests that log_set_stream(stdout) routes output correctly.
+ */
+static void test_log_to_terminal(void **state) {
+    (void)state;
+
+    int pipefd[2];
+    if (pipe(pipefd) == -1) fail_msg("Failed to create pipe");
+
+    int saved_stdout = dup(STDOUT_FILENO);
+    if (saved_stdout == -1) fail_msg("Failed to dup stdout");
+
+    if (dup2(pipefd[1], STDOUT_FILENO) == -1) fail_msg("Failed to redirect stdout");
+    close(pipefd[1]);
+
+    log_set_stream(stdout);
+    log_info("Test log message to terminal");
+    fflush(stdout); /* INFO is not auto-flushed; flush manually for test */
+
+    char buffer[LOG_BUFFER_SIZE] = {0};
+    ssize_t n = read(pipefd[0], buffer, sizeof(buffer) - 1);
+    close(pipefd[0]);
+    if (n < 0) fail_msg("Failed to read from pipe");
+    buffer[n] = '\0';
+
+    if (dup2(saved_stdout, STDOUT_FILENO) == -1) fail_msg("Failed to restore stdout");
+    close(saved_stdout);
+
+    assert_string_contains(buffer, "INFO");
+    assert_string_contains(buffer, "Test log message to terminal");
+}
+
+/*
+ * Log an INFO message to a file and verify the content is correct.
+ */
+static void test_log_to_file(void **state) {
+    (void)state;
+
+    FILE *f = capture_log_to_file(emit_info);
+    if (!f) fail_msg("Failed to reopen test log file");
+
+    char line[LOG_BUFFER_SIZE];
+    fgets(line, sizeof(line), f);
+    fclose(f);
+
+    assert_string_contains(line, "INFO");
+    assert_string_contains(line, "Test log message to file");
+}
+
+/* ── log/level_filtering ──────────────────────────────────────────────── */
+
+/*
+ * When the threshold is LOG_LEVEL_WARN, log_info must write nothing.
+ * Confirms the runtime level gate fires before any I/O.
+ */
+static void test_info_suppressed_below_threshold(void **state) {
+    (void)state;
+
+    FILE *w = fopen(TEST_LOG_FILE, "w");
+    if (!w) fail_msg("cannot open test log file for writing");
+    log_set_stream(w);
+    log_set_level(LOG_LEVEL_WARN);
+
+    log_info("This INFO must not appear");
+
+    fclose(w);
+    log_set_stream(stderr);
+
+    FILE *r = fopen(TEST_LOG_FILE, "r");
+    if (!r) fail_msg("cannot reopen test log file");
+    char line[LOG_BUFFER_SIZE] = {0};
+    size_t n = fread(line, 1, sizeof(line) - 1, r);
+    fclose(r);
+
+    /* File must be empty — INFO was filtered before any write. */
+    assert_int_equal((int)n, 0);
+}
+
+/*
+ * ERROR is not suppressible: even when threshold is LOG_LEVEL_WARN,
+ * log_error must still write to the stream.
+ * Validates the LOG_LEVEL_WARN minimum-clamping rule.
+ */
+static void test_error_never_suppressed(void **state) {
+    (void)state;
+
+    FILE *f = fopen(TEST_LOG_FILE, "w");
+    if (!f) fail_msg("cannot open test log file");
+    log_set_stream(f);
+    log_set_level(LOG_LEVEL_WARN); /* minimum threshold: only ERROR + WARN */
+
+    log_error("Critical failure that must appear");
+
+    fclose(f);
+    log_set_stream(stderr);
+
+    FILE *r = fopen(TEST_LOG_FILE, "r");
+    if (!r) fail_msg("cannot reopen log file");
+    char line[LOG_BUFFER_SIZE] = {0};
+    fgets(line, sizeof(line), r);
+    fclose(r);
+
+    assert_string_contains(line, "ERROR");
+    assert_string_contains(line, "Critical failure that must appear");
+}
+
+/*
+ * WARN appears when threshold is LOG_LEVEL_WARN.
+ * Validates that WARN (level 1) passes the gate when log_level == 1.
+ */
+static void test_warn_visible_at_warn_threshold(void **state) {
+    (void)state;
+
+    FILE *f = fopen(TEST_LOG_FILE, "w");
+    if (!f) fail_msg("cannot open test log file");
+    log_set_stream(f);
+    log_set_level(LOG_LEVEL_WARN);
+
+    log_warn("Anomaly detected");
+
+    fclose(f);
+    log_set_stream(stderr);
+
+    FILE *r = fopen(TEST_LOG_FILE, "r");
+    if (!r) fail_msg("cannot reopen log file");
+    char line[LOG_BUFFER_SIZE] = {0};
+    fgets(line, sizeof(line), r);
+    fclose(r);
+
+    assert_string_contains(line, "WARN");
+    assert_string_contains(line, "Anomaly detected");
+}
+
+/*
+ * The runtime threshold cannot be set below LOG_LEVEL_WARN.
+ * log_set_level(LOG_LEVEL_ERROR) must be clamped to LOG_LEVEL_WARN,
+ * so WARN messages still appear.
+ */
+static void test_level_clamped_at_warn_minimum(void **state) {
+    (void)state;
+
+    FILE *f = fopen(TEST_LOG_FILE, "w");
+    if (!f) fail_msg("cannot open test log file");
+    log_set_stream(f);
+    log_set_level(LOG_LEVEL_ERROR); /* below minimum — must be clamped to WARN */
+
+    log_warn("This WARN must still appear after clamping");
+
+    fclose(f);
+    log_set_stream(stderr);
+
+    FILE *r = fopen(TEST_LOG_FILE, "r");
+    if (!r) fail_msg("cannot reopen log file");
+    char line[LOG_BUFFER_SIZE] = {0};
+    fgets(line, sizeof(line), r);
+    fclose(r);
+
+    assert_string_contains(line, "WARN");
+}
+
+/* ── log/format ───────────────────────────────────────────────────────── */
+
+/*
+ * In a DEBUG build, log lines must include the source file and function name.
+ * In release they are omitted (this test runs under the DEBUG build used by
+ * the test suite, so we always verify source location is present here).
+ */
+static void test_debug_build_includes_source_location(void **state) {
+    (void)state;
+
+    FILE *f = capture_log_to_file(emit_info);
+    if (!f) fail_msg("cannot reopen test log file");
+
+    char line[LOG_BUFFER_SIZE] = {0};
+    fgets(line, sizeof(line), f);
+    fclose(f);
+
+    /* Tests compile with -DDEBUG: source location must be present. */
+    assert_string_contains(line, "test_log.c");
+    assert_string_contains(line, "emit_info");
+}
+
+/*
+ * The timestamp must appear in log output (LOG_USE_DATE path in log.c).
+ * Format: [YYYY-MM-DD HH:MM:SS.mmm]
+ */
+static void test_timestamp_present(void **state) {
+    (void)state;
+
+    FILE *f = capture_log_to_file(emit_info);
+    if (!f) fail_msg("cannot reopen test log file");
+
+    char line[LOG_BUFFER_SIZE] = {0};
+    fgets(line, sizeof(line), f);
+    fclose(f);
+
+    /* Leading bracket from timestamp. */
+    assert_string_contains(line, "[20"); /* year starts with "20" */
+}
+
+/* ── main ─────────────────────────────────────────────────────────────── */
+
 int main(void) {
-  // List of tests to run
-  const struct CMUnitTest tests[] = {
-      cmocka_unit_test(log_to_terminal),
-      cmocka_unit_test(log_to_file),
-  };
+    log_set_stream(stderr);
 
-  // Run the tests as a group
-  int result = cmocka_run_group_tests(tests, NULL, NULL);
+    const struct CMUnitTest stream_tests[] = {
+        cmocka_unit_test_setup_teardown(test_log_to_terminal, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_log_to_file,     setup, teardown),
+    };
 
-  // Clean up the test log file
-  remove(TEST_LOG_FILE);
+    const struct CMUnitTest level_tests[] = {
+        cmocka_unit_test_setup_teardown(test_info_suppressed_below_threshold, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_error_never_suppressed,          setup, teardown),
+        cmocka_unit_test_setup_teardown(test_warn_visible_at_warn_threshold,  setup, teardown),
+        cmocka_unit_test_setup_teardown(test_level_clamped_at_warn_minimum,   setup, teardown),
+    };
 
-  return result;
+    const struct CMUnitTest format_tests[] = {
+        cmocka_unit_test_setup_teardown(test_debug_build_includes_source_location, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_timestamp_present,                    setup, teardown),
+    };
+
+    int failures = 0;
+    failures += cmocka_run_group_tests_name("log/stream", stream_tests, NULL, NULL);
+    failures += cmocka_run_group_tests_name("log/level",  level_tests,  NULL, NULL);
+    failures += cmocka_run_group_tests_name("log/format", format_tests, NULL, NULL);
+    return failures;
 }
-
-
