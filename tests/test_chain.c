@@ -17,17 +17,24 @@
 
 #include "chain.h"
 #include "block.h"
+#include "consensus.h"
 #include "storage.h"
 #include "crypto.h"
 #include "log.h"
 
 /* ── helpers ──────────────────────────────────────────────────────────── */
 
-/* Build a block that correctly extends prev (or genesis if NULL). */
+/*
+ * Build a block that correctly extends prev (or genesis if NULL).
+ * Uses CONSENSUS_POS so chain_validate passes without mining:
+ * PoS only requires hash integrity (block_verify_hash), not a difficulty target.
+ * Tests that specifically exercise PoW consensus belong in test_consensus.c.
+ */
 static Block *make_next(uint32_t index, const unsigned char *prev_hash) {
   Block *b = block_create(index, prev_hash);
   assert_non_null(b);
-  b->timestamp = (time_t)(1700000000 + index);
+  b->timestamp  = (time_t)(1700000000 + index);
+  b->consensus  = CONSENSUS_POS;
   assert_int_equal(block_compute_hash(b), EXIT_SUCCESS);
   return b;
 }

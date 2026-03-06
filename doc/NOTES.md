@@ -706,3 +706,150 @@ This is an intentional, one-time break. The Makefile requires `make clean` befor
 | `tests/test_crypto.c` | Test amounts converted to ULL micro-units (e.g. `42.0` → `42000000ULL`) |
 
 ---
+
+## ADR-010: Consensus Module Redesign — Dispatch Table, PoW Enforcement, PoS Stubs
+
+**Date:** 2026-03
+**Status:** Adopted
+**Files:** `inc/consensus.h`, `src/consensus.c`, `src/chain.c`, `src/main.c`, `tests/test_chain.c`, `tests/test_consensus.c`
+
+### Context — Issues Found in Original consensus.h / consensus.c
+
+A review of the consensus module found the following bugs and architectural deficiencies:
+
+| Issue | Severity | Detail |
+|---|---|---|
+| `verify_consensus()` never called | Critical | No code anywhere included `consensus.h` or called `verify_consensus()`. Chain accepted any block regardless of PoW difficulty or PoS validity — consensus was completely bypassed. |
+| Wrong dispatch logic | Critical | `block->consensus % SWITCH_INTERVAL` evaluated `0 % 10 = 0` (PoS) and `1 % 10 = 1` (PoW) — the opposite of the intended routing. |
+| Always returns 0 (success) | Critical | `verify_consensus()` returned 0 unconditionally after printing a string. All validation was commented out. |
+| `verify_signature()` declared but undefined | High | Would cause a linker error if called. Interface Segregation violated — an incomplete function was exported. |
+| `SWITCH_INTERVAL` conflicts with ADR-006 | High | Automatic block-index-based consensus switching conflicts with `Block.consensus` being an explicit proposer-set field (ADR-006). The field stores the consensus type directly; SWITCH_INTERVAL is meaningless. |
+| `puts()` instead of `log_error()` | Low | Bypassed the log framework; messages always went to stdout. |
+| Unused types (`ProofOf`, `ConsensusType`) | Low | Never referenced outside `consensus.h`. Added noise. |
+
+### Decision — Dispatch Table
+
+Replace the conditional with a function-pointer array indexed by `block->consensus`:
+
+```c
+typedef int (*consensus_fn)(const Block *);
+
+static const consensus_fn VERIFY[] = {
+    [CONSENSUS_POW] = verify_pow_rules,
+    [CONSENSUS_POS] = verify_pos_rules,
+};
+```
+
+Adding a new consensus type requires only a new entry in the array and a new `verify_*_rules` function — no changes to `verify_consensus()` itself (Open/Closed Principle).
+
+### Decision — Constants
+
+```c
+#define CONSENSUS_POW 0   /* Proof of Work  */
+#define CONSENSUS_POS 1   /* Proof of Stake */
+```
+
+These replace `SWITCH_INTERVAL`, `ProofOf`, and `ConsensusType`, which are all removed. The constants are self-documenting and match the values stored in `Block.consensus` (from ADR-006).
+
+### Decision — PoW Rules
+
+`verify_pow_rules()` delegates entirely to `validate_block_pow(block, DIFFICULTY)`, which performs both the leading-zero difficulty check and `block_verify_hash()` internally. The DIFFICULTY constant (default 4) is defined in `pow.h`.
+
+### Decision — PoS Rules (with Security Stubs)
+
+`verify_pos_rules()` currently enforces:
+1. **Hash integrity** — `block_verify_hash()` — required for all blocks.
+
+Three security checks are required for production PoS but deferred to ADR-003 (validator key registry + VRF leader selection). Each is marked with a TODO:
+
+```c
+/* TODO (ADR-003): verify VRF proof — proposer must hold the slot token. */
+/* TODO (ADR-003): verify Dilithium-3 block signature (verify_block_signature). */
+/* TODO (ADR-002): verify proposer has sufficient registered stake. */
+```
+
+The stubs are present and accounted for; they are not silent omissions.
+
+### Decision — `verify_block_signature` Stub
+
+`verify_signature(const Block *)` (undeclared implementation) is replaced by `verify_block_signature(const Block *)`, which is implemented as a stub returning `EXIT_FAILURE`. This:
+- Eliminates the undefined-symbol linker error.
+- Prevents unsigned blocks from passing validation by accident.
+- Documents the missing feature with an ADR-003 reference.
+
+### Decision — Wire into `chain_validate`
+
+```c
+/* Before (manual check only): */
+if (block->consensus != 0 && block->consensus != 1) {
+    log_error("chain_validate: unknown consensus type ...");
+    return EXIT_FAILURE;
+}
+
+/* After (full consensus enforcement): */
+if (verify_consensus(block) != EXIT_SUCCESS) {
+    log_error("chain_validate: consensus check failed ...");
+    return EXIT_FAILURE;
+}
+```
+
+`chain_validate()` now enforces PoW difficulty and PoS hash integrity for every block added to the chain. The consensus bypass is closed.
+
+### Decision — `cmd_commit` Now Mines PoW Blocks
+
+`cmd_commit` in `main.c` previously called `block_compute_hash(b)`, which produces a valid hash but with no leading zeros. After wiring `verify_consensus` into `chain_validate`, such a block would fail the PoW check when `chain_add()` was called.
+
+Fix: set `b->consensus = CONSENSUS_POW` explicitly and replace `block_compute_hash` with `mine_block(b, DIFFICULTY)`:
+
+```c
+b->consensus = CONSENSUS_POW;
+if (mine_block(b, DIFFICULTY) != EXIT_SUCCESS) {
+    fprintf(stderr, "error: failed to mine block (nonce exhausted)\n");
+    ...
+}
+```
+
+This makes the CLI correct by construction: committed blocks are real PoW blocks.
+
+### Decision — `test_chain.c` Uses `CONSENSUS_POS` in `make_next`
+
+`make_next()` (the test helper that builds well-formed blocks for chain tests) now sets `b->consensus = CONSENSUS_POS`. PoS only requires hash integrity — no mining — so chain tests remain fast. Tests that specifically exercise PoW consensus live in `test_consensus.c`.
+
+This separates concerns: `test_chain.c` tests chain mechanics (link rules, pool, storage); `test_consensus.c` tests consensus rules (difficulty, hash integrity, dispatch).
+
+### Security Improvements
+
+| Before | After |
+|---|---|
+| Consensus bypass: any block accepted | `verify_consensus()` enforced in `chain_validate()` for every `chain_add()` |
+| PoW difficulty never checked at chain layer | PoW blocks must satisfy `DIFFICULTY` leading zeros before admission |
+| `verify_signature()` undefined symbol | `verify_block_signature()` stub returns EXIT_FAILURE — unsigned blocks rejected |
+| SWITCH_INTERVAL created implicit PoW↔PoS confusion | Explicit `block->consensus` field, validated against known types |
+| Unknown consensus types silently accepted | Bounds check rejects unknown types (EXIT_FAILURE) |
+
+### Pending Security Work (ADR-003)
+
+1. **VRF leader election**: The slot token proof must be verified to prevent any validator from proposing PoS blocks out of turn.
+2. **Dilithium-3 block signatures**: `verify_block_signature()` must be wired to the key registry once validator public keys are stored.
+3. **Stake threshold**: A minimum stake must be required before a validator can propose — prevents Sybil attacks.
+4. **Equivocation guard**: A validator should not be permitted to propose two different blocks for the same slot.
+
+### Test Coverage (`tests/test_consensus.c`) — 8 tests across 2 groups
+
+| Group | Tests |
+|---|---|
+| `consensus/verify_consensus` | NULL block, PoW mined block passes, PoW unmined block fails, PoW tampered nonce fails, PoS valid hash passes, PoS tampered hash fails, unknown type=2 fails |
+| `consensus/verify_block_signature` | stub always returns EXIT_FAILURE |
+
+### Files Changed
+
+| File | Change |
+|---|---|
+| `inc/consensus.h` | Removed SWITCH_INTERVAL / ProofOf / ConsensusType; added CONSENSUS_POW / CONSENSUS_POS; replaced `verify_signature` with `verify_block_signature` |
+| `src/consensus.c` | Full rewrite: dispatch table, verify_pow_rules, verify_pos_rules (with TODO stubs), verify_block_signature stub, log_error/log_warn throughout |
+| `src/chain.c` | Added `#include "consensus.h"`; replaced manual consensus field check with `verify_consensus()` call |
+| `src/main.c` | Added `#include "consensus.h"` and `pow.h`; `cmd_commit` now sets `CONSENSUS_POW` and calls `mine_block(b, DIFFICULTY)` |
+| `tests/test_chain.c` | Added `#include "consensus.h"`; `make_next()` sets `b->consensus = CONSENSUS_POS` |
+| `tests/test_consensus.c` | New: 8 tests for verify_consensus and verify_block_signature |
+
+---

@@ -1,38 +1,35 @@
+/* consensus.h — consensus routing: PoW and PoS block validation. */
 #ifndef CONSENSUS_H
 #define CONSENSUS_H
 
 #include "block.h"
-/*#include "pos.h"*/
 
-#define SWITCH_INTERVAL 10 // Switch between PoW and PoS every 10 blocks
+/*
+ * Consensus type constants stored in Block.consensus.
+ * 0 = Proof of Work  (block hash must meet a difficulty target)
+ * 1 = Proof of Stake (block hash integrity + proposer stake/VRF — see ADR-003)
+ */
+#define CONSENSUS_POW 0
+#define CONSENSUS_POS 1
 
-typedef enum { Work, Stake } ProofOf;
-typedef int ConsensusType;
-
-/**/
-/*// Hybrid Consensus System*/
-/*typedef struct {*/
-/*  ConsensusType current_consensus;*/
-/*  PoSSystem pos_system;*/
-/*} Consensus;*/
-
-/* Verifies a block against the hybrid consensus mechanism (PoW/PoS).
- * Returns 0 if the block meets consensus requirements, 1 otherwise.
+/*
+ * Verify that `block` satisfies its declared consensus rules.
+ *
+ * Dispatches to verify_pow_rules or verify_pos_rules based on
+ * block->consensus. Unknown consensus values return EXIT_FAILURE.
+ *
+ * Returns EXIT_SUCCESS if all rules pass, EXIT_FAILURE otherwise.
+ * Safe to call with NULL (returns EXIT_FAILURE without crashing).
  */
 int verify_consensus(const Block *block);
 
-/* Verifies that the block is signed by the branch owner.
- * Returns 0 if the block is signed by the branch owner, 1 otherwise.
+/*
+ * Verify the proposer's Dilithium-3 block signature.
+ *
+ * Stub: returns EXIT_FAILURE until the validator key registry is in place
+ * (ADR-003). Wired here to prevent unsigned blocks from passing consensus
+ * validation before signing is fully implemented.
  */
-int verify_signature(const Block *block);
+int verify_block_signature(const Block *block);
 
-/*// Initialize the hybrid consensus system*/
-/*void init_hybrid_consensus(Consensus *consensus);*/
-/**/
-/*// Determine which mechanism to use for the next block*/
-/*ConsensusType get_consensus_for_block(int block_index);*/
-/**/
-/*// Verify a block using hybrid consensus*/
-/*int verify_block_hybrid(Consensus *consensus, Block *block);*/
-
-#endif // CONSENSUS_H
+#endif /* CONSENSUS_H */

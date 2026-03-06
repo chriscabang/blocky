@@ -5,6 +5,7 @@
 
 #include "chain.h"
 #include "block.h"
+#include "consensus.h"
 #include "storage.h"
 #include "log.h"
 
@@ -115,10 +116,10 @@ int chain_validate(const Chain *c, const Block *block) {
     }
   }
 
-  /* Consensus field */
-  if (block->consensus != 0 && block->consensus != 1) {
-    log_error("chain_validate: unknown consensus type %u in block %u",
-              block->consensus, block->index);
+  /* Consensus rules */
+  if (verify_consensus(block) != EXIT_SUCCESS) {
+    log_error("chain_validate: consensus check failed for block %u",
+              block->index);
     return EXIT_FAILURE;
   }
 

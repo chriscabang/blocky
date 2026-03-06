@@ -9,7 +9,9 @@
 
 #include "block.h"
 #include "chain.h"
+#include "consensus.h"
 #include "crypto.h"
+#include "pow.h"
 #include "storage.h"
 #include "transaction.h"
 
@@ -334,8 +336,13 @@ static int cmd_commit(int argc, char **argv)
 
     compute_merkle_root(b, (char *)b->merkle_root);
 
-    if (block_compute_hash(b) != EXIT_SUCCESS) {
-        fprintf(stderr, "error: failed to compute block hash\n");
+    /*
+     * PoW: mine the block so its hash satisfies DIFFICULTY leading hex zeros.
+     * chain_validate (called inside chain_add) enforces this via verify_consensus.
+     */
+    b->consensus = CONSENSUS_POW;
+    if (mine_block(b, DIFFICULTY) != EXIT_SUCCESS) {
+        fprintf(stderr, "error: failed to mine block (nonce exhausted)\n");
         block_free(b);
         chain_unload(c);
         return 2;
