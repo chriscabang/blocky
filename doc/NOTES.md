@@ -1150,3 +1150,139 @@ Notable gaps:
 | `Makefile` | Added `COV_*` variables and build rules for `build/cov/`; rewrote `test` target shell to capture output and print summary; added `coverage` phony target |
 
 ---
+
+---
+
+## ADR-014: Network Module — TLS Security, Clean Architecture, SOLID Rewrite
+
+**Date:** 2026-03
+**Status:** Adopted
+
+### Context
+
+The original `network.c` was a prototype with significant security gaps and architectural violations that made it unsuitable for production use. A full review against SOLID principles, clean code methodology, and security-first requirements was conducted before any further network work.
+
+### Problems Found
+
+**Security (blockers):**
+
+| # | Issue |
+|---|-------|
+| S1 | No server certificate or private key was loaded — TLS handshake always failed |
+| S2 | No peer certificate verification (`SSL_VERIFY_NONE` default) — MITM trivially possible |
+| S3 | No minimum TLS version enforced — downgrade attacks possible |
+| S4 | 256-byte receive buffer — Dilithium-3 signature alone is 3 293 bytes; real blocks silently truncated |
+| S5 | `SSL_read()` return value ignored — failed reads treated as empty input |
+| S6 | No input validation on received bytes before acting on them |
+| S7 | `SSL_shutdown()` called once only — TLS half-close; peer left in undefined state |
+| S8 | OpenSSL 1.x deprecated init API (`SSL_load_error_strings`, `OpenSSL_add_ssl_algorithms`) |
+
+**Architecture / SOLID:**
+
+- Global `SSL_CTX *ctx` (SRP + OCP violation); shadowed by a local variable in the same TU.
+- `init_tls()` created the global but `start_network_server()` created its own — dead function.
+- `start_network_server()` mixed socket setup, TLS setup, accept loop, and I/O in one function.
+- `create_client_context()` implemented but not exported in the header — dead private function.
+- Six `exit()` calls in a library module — callers lost all error handling control.
+- Hard-coded `SERVER_IP` and `SERVER_PORT` `#define`s — OCP violation.
+- `serialize_block` and `broadcast_block` commented out — module was disconnected from the chain.
+- All output via `printf` / `fprintf(stderr)` — bypassed `log_*` infrastructure.
+
+### Decision
+
+Complete rewrite of `network.h` / `network.c` with the following design:
+
+**No global state.** An opaque `NetContext` struct owns the `SSL_CTX` and configuration. Each context is fully independent. Callers create, use, and free their own context.
+
+**Configuration-driven.** A `NetConfig` struct is the single point of configuration for cert paths, CA bundle, bind address, port, and PQC group. No compile-time constants for runtime values.
+
+**Security-first contract:**
+- TLS 1.3 minimum enforced on every context (client and server).
+- PQC hybrid group (`p256_kyber768`) is set when `cfg->pqc_group` is non-NULL. NULL skips PQC enforcement (test environments without OQS provider).
+- Client contexts always enable `SSL_VERIFY_PEER`.
+- Server contexts optionally enable mutual TLS via `SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT` when `ca_file` is supplied.
+- Bidirectional `tls_shutdown()` on every connection close.
+- `SSL_read()` return value checked; failed reads logged and discarded.
+- Receive buffer `NET_BLOCK_BUF_SIZE = 4096` — sufficient for block header broadcast (see Serialization).
+
+**No `exit()` calls.** All functions return error codes. Callers decide recovery.
+
+**Block serialization policy.** Only block header fields (index, timestamp, hashes, nonce, consensus, tx_count) are broadcast. Full transaction bodies (including Dilithium-3 signatures, up to ~145 KB per block) are fetched on demand. This keeps broadcast payloads small and avoids transmitting unvalidated key material over the wire.
+
+**Single-threaded server.** `net_server_run()` handles one connection at a time. This is a deliberate trade-off appropriate for Raspberry Pi / low-concurrency nodes. Threading can be added later without changing the API.
+
+**`log_*` throughout.** All output uses the project-standard `log_info` / `log_warn` / `log_error` macros.
+
+### API
+
+```c
+NetContext *net_context_server(const NetConfig *cfg);
+NetContext *net_context_client(const NetConfig *cfg);
+void        net_context_free(NetContext *ctx);           /* NULL-safe */
+
+int net_serialize_block(const Block *block, char *buf, size_t bufsz);
+int net_broadcast_block(NetContext *ctx, const Block *block,
+                        const char *peer_addr, uint16_t peer_port);
+int net_server_run(NetContext *ctx);
+```
+
+### PQC Group Note
+
+`p256_kyber768` is a hybrid classical P-256 + Kyber-768 group. If classical ECC is broken by a quantum adversary, Kyber-768 still provides post-quantum security. If Kyber is broken, P-256 still provides classical security. This defence-in-depth is the standard transition approach endorsed by NIST.
+
+The OQS OpenSSL provider must be loaded at runtime for PQC groups to be available. Tests use `pqc_group = NULL` to avoid a hard dependency on the provider in CI environments.
+
+### Pending
+
+- `net_server_run()` currently logs received bytes; it needs to call a block deserializer and `chain_add()` once that interface is defined.
+- Multi-peer broadcasting (fan-out to all known peers) belongs in `chain_propose()` using `net_broadcast_block()` per peer.
+
+### Files Changed
+
+| File | Change |
+|---|---|
+| `inc/network.h` | Full rewrite — `NetConfig`, opaque `NetContext`, secure API |
+| `src/network.c` | Full rewrite — no global state, TLS 1.3 min, `SSL_VERIFY_PEER`, bidirectional shutdown, `log_*` |
+| `tests/test_network.c` | New — 20 unit tests across 4 groups |
+
+---
+
+## ADR-015: Dead Code Removal — iterator.h and common.h Cleanup
+
+**Date:** 2026-03
+**Status:** Adopted
+
+### Context
+
+Two header files were present in `inc/` that were either completely unused or contained broken macro references.
+
+### Problems Found
+
+**`inc/iterator.h`:**
+- Declared `iterate()` and `next_block()` but had no corresponding `iterator.c`.
+- Was not `#include`d anywhere in the codebase.
+- `Iterator.next` field duplicated `Block.next` from `block.h` without adding value.
+- Pure dead code — no implementation, no consumers.
+
+**`inc/common.h`:**
+- `CHECKNULL(x)` and `CHECKZERO(x)` only called `Warn(...)` but did not call `FAIL` — they were silent no-ops that gave a false sense of guard coverage.
+- `Info` and `Warn` were undefined identifiers — the file referenced macros that did not exist anywhere in the codebase (likely intended aliases for `log_info` / `log_warn` that were never defined). The file would fail to compile if included.
+- Was not `#include`d anywhere in the codebase.
+
+### Decision
+
+**`inc/iterator.h`:** Deleted. Block traversal is done via `Block.next` directly. If a proper iterator abstraction is needed in the future, it should be implemented as `iterator.c` + `iterator.h` together, with tests.
+
+**`inc/common.h`:** Rewritten:
+- `Info` → `log_info`, `Warn` → `log_warn` (uses the actual log macros).
+- `CHECKNULL(x)` and `CHECKZERO(x)` now call `FAIL(x)` — they set `STATUS = EXIT_FAILURE` and `break` out of the `START` scope.
+- Macro hygiene: `!x` → `!(x)`, `x == 0` → `(x) == 0`.
+- Warning comment added: do not use `CHECKNULL` / `CHECKZERO` / `FAIL` inside a nested `for`/`while` loop within a `START` block — `break` exits the innermost enclosing loop, not the `START` scope.
+
+### Files Changed
+
+| File | Change |
+|---|---|
+| `inc/iterator.h` | Deleted — no implementation, no consumers |
+| `inc/common.h` | Rewritten — fixed `Info`/`Warn` refs, `CHECKNULL`/`CHECKZERO` now properly call `FAIL` |
+
