@@ -1,256 +1,327 @@
 # QuteChain — Architecture & Design Notes
 
-This document captures key architectural decisions and design discussions for the QuteChain (`blocky`) project. Update this file whenever a concept, decision, or trade-off is discussed that affects the overall design.
+This document captures architectural decisions, design discussions, and
+implementation rationale for the QuteChain (`blocky`) project. It is the
+authoritative reference for why the code is structured the way it is.
+
+Update this file whenever a design decision is made, revised, or reversed.
+The git log is the record of *what* changed; this file is the record of *why*.
 
 ---
 
-## Design Philosophy
+## Table of Contents
 
-QuteChain is written in C and deliberately applies **SOLID principles** and **clean code** practices throughout. These are not aspirational — they are enforced at review time. The sections below translate each principle into concrete C conventions used in this codebase.
+- [Part I — Architectural Overview](#part-i--architectural-overview)
+  - [Module Map](#module-map)
+  - [Dependency Graph](#dependency-graph)
+  - [Data Flow: Transaction to Block](#data-flow-transaction-to-block)
+  - [On-Disk Layout](#on-disk-layout)
+  - [Consensus Model](#consensus-model)
+  - [Network Model](#network-model)
+- [Part II — Design Philosophy](#part-ii--design-philosophy)
+  - [SOLID in C](#solid-in-c)
+  - [Clean Code Conventions](#clean-code-conventions)
+  - [Testing Conventions](#testing-conventions)
+- [Part III — Architecture Decision Records](#part-iii--architecture-decision-records)
+  - [ADR-001 Git-Like Blockchain Model](#adr-001-git-like-blockchain-model)
+  - [ADR-002 Canonical Chain Rule — GHOST](#adr-002-canonical-chain-rule--ghost)
+  - [ADR-003 Proposer Requirements — Stake + VRF + Dilithium](#adr-003-proposer-requirements--stake--vrf--dilithium)
+  - [ADR-004 Language Stack and Implementation Philosophy](#adr-004-language-stack-and-implementation-philosophy)
+  - [ADR-005 Storage Module — Git-Style Object Store](#adr-005-storage-module--git-style-object-store)
+  - [ADR-006 Block/Chain Split — Pool Allocator](#adr-006-blockchain-split--pool-allocator)
+  - [ADR-007 Crypto Module — Self-Contained SHA-256](#adr-007-crypto-module--self-contained-sha-256)
+  - [ADR-008 CLI Design — Git-Like Command Dispatcher](#adr-008-cli-design--git-like-command-dispatcher)
+  - [ADR-009 Transaction Module — Dilithium Sizes, Integer Amounts, Replay Protection](#adr-009-transaction-module--dilithium-sizes-integer-amounts-replay-protection)
+  - [ADR-010 Consensus Module — Dispatch Table, PoW, PoS](#adr-010-consensus-module--dispatch-table-pow-pos)
+  - [ADR-011 Log Module — Heisenbug-Safe, Level-Gated, Secure](#adr-011-log-module--heisenbug-safe-level-gated-secure)
+  - [ADR-012 Integration Tests — Payment and Miner Use Cases](#adr-012-integration-tests--payment-and-miner-use-cases)
+  - [ADR-013 Build System — Test Summary and Coverage](#adr-013-build-system--test-summary-and-coverage)
+  - [ADR-014 Network Module — TLS Security, SOLID Rewrite](#adr-014-network-module--tls-security-solid-rewrite)
+  - [ADR-015 Dead Code Removal — iterator.h and common.h](#adr-015-dead-code-removal--iteratorh-and-commonh)
+  - [ADR-016 Deployment — Raspberry Pi + USB SSD, Native systemd](#adr-016-deployment--raspberry-pi--usb-ssd-native-systemd)
+- [Part IV — Pending Work](#part-iv--pending-work)
+
+---
+
+## Part I — Architectural Overview
+
+### Module Map
+
+Each `.c`/`.h` pair owns exactly one responsibility. `main.c` is the only
+module permitted to coordinate across module boundaries.
+
+```
+src/main.c          CLI dispatcher — init, send, commit, propose, log, show, …
+src/chain.c         In-memory chain tip, pool allocator, validate, add, propose
+src/block.c         Block struct — create, compute_hash, verify_hash, free
+src/storage.c       Git-style .chain/ object store and HEAD ref management
+src/network.c       TLS 1.3 server/client, block serialize/deserialize, broadcast
+src/consensus.c     verify_consensus() dispatch → PoW or PoS rules
+src/pow.c           Proof-of-Work mining (midstate optimization) and validate
+src/pos.c           Proof-of-Stake validator registry, stake, select, validate
+src/crypto.c        block_hash(), compute_merkle_root(), sign/verify stubs
+src/sha256.c        Self-contained FIPS 180-4 SHA-256 — no OpenSSL in hash path
+src/transaction.c   Transaction struct, Dilithium-3 sign and verify
+src/log.c           Level-gated logger — ERROR/WARN/INFO/DEBUG
+```
+
+### Dependency Graph
+
+Arrows point from consumer to dependency (`A → B` means A includes B).
+
+```
+main.c ──────┬──► chain.h ──► block.h ──► transaction.h
+             ├──► storage.h            └──► (sha256.h via crypto.h)
+             ├──► consensus.h ──► block.h
+             ├──► pow.h ────────► block.h
+             └──► network.h ───► chain.h
+
+chain.c ─────┬──► network.h   (for chain_propose broadcast)
+             └──► consensus.h (for verify_consensus in chain_validate)
+
+network.h ───────► chain.h    (Chain* in net_server_run)
+```
+
+**No circular dependencies.** `chain.h` does not include `network.h`. This
+is enforced by design: `chain_propose` is implemented in `chain.c` (which
+includes `network.h`), but the `chain.h` interface has no network types.
+
+### Data Flow: Transaction to Block
+
+```
+User: blocky send --from alice --to bob --amount 10.5
+          │
+          ▼
+  Transaction {sender, recipient, amount=10500000, nonce}
+          │
+          ├─► sign_transaction()   [Dilithium-3 signature — ADR-009]
+          │
+          ▼
+  .chain/STAGED  (tab-separated staging area — ADR-008)
+
+User: blocky commit
+          │
+          ▼
+  block_create(index, prev_hash)
+          │
+          ├─► compute_merkle_root()   SHA-256 over all tx fields — ADR-007
+          │
+          ├─► mine_block(b, DIFFICULTY)   PoW: nonce scan until hash has
+          │                               DIFFICULTY leading '0' hex chars
+          ▼
+  Block {index, timestamp, prev_hash, merkle_root, nonce, consensus=0, hash}
+          │
+          ▼
+  chain_validate()
+    ├─ previous_hash == c->head->hash ?
+    ├─ block_verify_hash() : recompute and compare
+    ├─ transaction amounts > 0 ?
+    └─ verify_consensus() : PoW difficulty check
+          │
+          ▼
+  chain_add()
+    ├─ storage_insert()    write block to .chain/blocks/<hash>
+    └─ storage_checkout()  advance .chain/refs/heads/main → new hash
+```
+
+### On-Disk Layout
+
+Mirrors git's `.git/` structure exactly (ADR-005):
+
+```
+.chain/
+├── HEAD                        "ref: refs/heads/main"
+├── refs/
+│   └── heads/
+│       └── main                <64-char block hash of current tip>
+├── blocks/
+│   ├── a3/
+│   │   └── a3f8c2d1e5b6f790…  serialized Block struct (binary)
+│   └── 00/
+│       └── 0000e4f2c9a3b1d8…
+├── STAGED                      tab-separated pending transactions
+├── peers                       one ip:port per line (for propose)
+├── tls-cert.pem                node TLS certificate
+└── tls-key.pem                 node TLS private key (chmod 600)
+```
+
+**HEAD resolution chain:**
+```
+HEAD → "ref: refs/heads/main" → .chain/refs/heads/main → <block hash>
+```
+
+`storage_checkout(hash)` updates the branch file, not HEAD itself — identical
+to how `git checkout` works.
+
+### Consensus Model
+
+`Block.consensus` is an explicit field set by the proposer:
+
+| Value | Constant | Rule enforced by `verify_consensus()` |
+|---|---|---|
+| `0` | `CONSENSUS_POW` | Hash must have ≥ `DIFFICULTY` leading hex zeros |
+| `1` | `CONSENSUS_POS` | Hash integrity only; VRF + Dilithium pending ADR-003 |
+
+`commit` (CLI) always sets `CONSENSUS_POW` and calls `mine_block()`.
+`chain_validate()` calls `verify_consensus()` for every `chain_add()`.
+
+Every-tenth-block PoS selection (`index % 10 == 0`) is the current placeholder
+in `pos_validate_block()` — VRF leader election is pending ADR-003.
+
+### Network Model
+
+```
+Node A (proposer)                      Node B (receiver)
+─────────────────────                  ─────────────────────
+chain_propose(c, c->head)
+  │
+  ├─ read .chain/peers
+  ├─ net_context_client()              net_context_server()
+  │                                        │
+  └─ net_broadcast_block()  ──TLS──►  net_server_run(ctx, chain)
+       serialize header                   │
+       (index, ts, hashes,                ├─ net_deserialize_block()
+        nonce, consensus,                 ├─ block_verify_hash()
+        tx_count)                         └─ chain_add()
+```
+
+Only block **header fields** are broadcast; full transaction bodies
+(Dilithium-3 signatures up to ~145 KB/block) are fetched on demand.
+`net_server_run()` accepts `Chain *chain`; passing `NULL` enables log-only
+monitor mode.
+
+---
+
+## Part II — Design Philosophy
+
+QuteChain is written in C and deliberately applies **SOLID principles** and
+**clean code** practices throughout. These are not aspirational — they are
+enforced at review time.
 
 ### SOLID in C
 
 #### S — Single Responsibility
-Each `.c`/`.h` pair owns exactly one concern. A module that does two things should be two modules.
+
+Each `.c`/`.h` pair owns exactly one concern. A module that does two things
+should be two modules.
 
 | Module | Sole responsibility |
 |---|---|
 | `sha256.c` | FIPS 180-4 SHA-256 computation — nothing else |
 | `storage.c` | On-disk object store and ref management |
 | `network.c` | TLS connection lifecycle and block serialization |
-| `pow.c` | Proof-of-work mining and validation |
+| `pow.c` | Proof-of-Work mining and validation |
 | `transaction.c` | Transaction signing and verification |
 | `chain.c` | In-memory chain state and pool allocator |
 
-`main.c` is the only module permitted to coordinate across modules. All others are strictly single-purpose.
+`main.c` is the only module permitted to coordinate across modules.
 
 #### O — Open/Closed
-Public headers define stable interfaces. Callers depend on the header, never on internal struct layout or file-level statics. New behavior is added by extension, not by modifying existing interfaces.
 
-- Adding a new consensus algorithm means adding a new module and a new `consensus` enum value — not modifying `block.h` or `chain.c`.
-- `net_context_server` / `net_context_client` accept a `NetConfig` struct; adding a new TLS option is a new field in `NetConfig`, not a new function signature.
+Public headers define stable interfaces. New behavior is added by extension,
+not by modifying existing interfaces.
+
+- Adding a new consensus algorithm means adding a new module and a new
+  `CONSENSUS_*` constant — not modifying `block.h` or `chain.c`.
+- `net_context_server` / `net_context_client` accept a `NetConfig` struct;
+  adding a new TLS option is a new field in `NetConfig`, not a new function.
+- The consensus dispatch table in `consensus.c` is indexed by `block->consensus`;
+  a new entry requires only a new function pointer — no changes to
+  `verify_consensus()` itself.
 
 #### L — Liskov Substitution
-Any function accepting `const Block *` or `const Chain *` must work correctly for any valid instance of that type, regardless of how it was constructed. There are no hidden preconditions beyond what the header documents.
 
-- `block_verify_hash(block)` is meaningful for any non-NULL Block, whether loaded from disk or freshly created.
-- `chain_validate(chain, block)` treats every Block identically — genesis blocks are distinguished only by their `previous_hash` value, not by type.
+Any function accepting `const Block *` or `const Chain *` works correctly for
+any valid instance of that type, regardless of how it was constructed.
+
+- `block_verify_hash(block)` is meaningful for any non-NULL Block.
+- `chain_validate(chain, block)` treats every Block identically — genesis is
+  distinguished only by its `previous_hash` value, not by a special type.
 
 #### I — Interface Segregation
-Headers expose only what callers need. Internal helpers are `static` in the `.c` file and invisible to the rest of the system.
 
-- `NetContext` is opaque — callers hold a pointer and call functions; no field access.
-- `storage.h` exposes five functions; the file path layout (`.chain/blocks/…`) is entirely internal.
-- `sha256.h` exposes `sha256_ctx`, `sha256_init`, `sha256_update`, `sha256_final` — and nothing else.
+Headers expose only what callers need. Internal helpers are `static` and
+invisible outside the translation unit.
+
+- `NetContext` is opaque — callers hold a pointer; no field access.
+- `storage.h` exposes six functions; the file path layout is entirely internal.
+- `sha256.h` exposes `sha256_ctx`, `sha256_init`, `sha256_update`,
+  `sha256_final`, `sha256_digest`, `sha256_to_hex` — and nothing else.
 
 #### D — Dependency Inversion
-High-level modules depend on abstractions (headers), not on low-level implementation details.
 
-- `chain.c` calls `storage_insert` / `storage_checkout` — it has no knowledge of file paths or `fwrite`.
-- `pow.c` calls `block_compute_hash` — it has no knowledge of SHA-256 internals.
-- `network.c` calls `log_info` / `log_error` — it has no knowledge of how log output is routed.
+High-level modules depend on abstractions, not on implementation details.
+
+- `chain.c` calls `storage_insert` / `storage_checkout` — no knowledge of
+  file paths or `fwrite`.
+- `pow.c` calls `block_compute_hash` — no knowledge of SHA-256 internals.
+- `network.c` calls `log_info` / `log_error` — no knowledge of log routing.
 
 ---
 
 ### Clean Code Conventions
 
-**Naming — snake_case everywhere.**
-All identifiers (functions, variables, struct fields, macros where readable), source filenames, and binary names follow snake_case. Compound words are always separated: `start_chain`, `mine_block`, `propose_block`, `key_gen`. This mirrors the C standard library and eliminates ambiguity between `startchain`, `StartChain`, and `start_chain`.
+**snake_case everywhere.**
+All identifiers, source filenames, and binary names. `start_chain`,
+`mine_block`, `key_gen`. This mirrors the C standard library and eliminates
+ambiguity between `startchain`, `StartChain`, and `start_chain`.
 
 **No `exit()` in library code.**
-Only `main.c` and utility `main()` functions may terminate the process. Every library function returns an error code (`NULL`, `-1`, `EXIT_FAILURE`) and lets the caller decide. This makes all modules safe to link into test harnesses and future daemons.
+Only `main.c` and utility `main()` functions may terminate the process. Every
+library function returns an error code (`NULL`, `-1`, `EXIT_FAILURE`) and lets
+the caller decide. All modules are safe to link into test harnesses.
 
 **No global mutable state.**
-Each `NetContext`, `Chain`, and `OQS_SIG` instance is heap-allocated, caller-owned, and fully independent. There are no module-level globals. Concurrent future use (multiple chains, multiple TLS contexts) requires no locking changes to existing code.
+Each `NetContext`, `Chain`, and `OQS_SIG` instance is heap-allocated and
+caller-owned. No module-level globals.
 
 **Const-correctness.**
-Functions that do not modify their inputs declare them `const`. This is enforced: `block_verify_hash(const Block *)`, `chain_validate(const Chain *, const Block *)`, `net_serialize_block(const Block *, …)`. Violations are treated as bugs.
+Functions that do not modify their inputs declare them `const`. Violations are
+treated as bugs:
 
-**One function, one job.**
-Functions are short and named after what they do, not how they do it. `apply_common_security` in `network.c` encapsulates the TLS 1.3 + PQC group setup so that both server and client paths share identical policy without duplication.
+```c
+int  block_verify_hash(const Block *block);
+int  chain_validate(const Chain *c, const Block *block);
+int  net_serialize_block(const Block *block, char *buf, size_t bufsz);
+int  chain_propose(Chain *c, const Block *block);
+void compute_merkle_root(const Block *block, char *out);
+```
 
 **Errors are values, not exceptions.**
-Return codes are checked at every call site. The pattern is: acquire resources, check each step, clean up on any failure path. `goto done` with a single cleanup block is preferred over duplicated `free` / `SSL_free` chains.
+Return codes are checked at every call site. `goto done` with a single cleanup
+block is preferred over duplicated `free` / `SSL_free` chains:
+
+```c
+int rc = EXIT_FAILURE;
+OQS_SIG *sig  = OQS_SIG_new(OQS_SIG_alg_dilithium_3);
+uint8_t *priv = malloc(sig->length_secret_key);
+if (!sig || !priv) goto done;
+/* … work … */
+rc = EXIT_SUCCESS;
+done:
+    OQS_MEM_cleanse(priv, sig->length_secret_key);
+    free(priv);
+    OQS_SIG_free(sig);
+    return rc;
+```
 
 **Private key material is zeroed before release.**
-Any function that holds a private key or secret seed calls `OQS_MEM_cleanse` before `free`. This applies to utility binaries (`send_payment`, `key_gen`) and any future signing code.
+Any function that holds a private key calls `OQS_MEM_cleanse` before `free`.
 
-**Unit test coverage is mandatory.**
-Every public `.h`/`.c` module has a corresponding `tests/test_<module>.c` using CMocka. A module is not considered complete until `make test` passes with that suite included. Coverage is tracked via `make check`.
-
----
-
-## ADR-001: Git-Like Blockchain Model
-
-**Date:** 2025-03
-**Status:** Adopted
-
-### Context
-
-The goal of QuteChain is to create a blockchain that operates like git. The workflow mirrors common git operations:
-
-| Git operation | Blockchain equivalent |
-|---|---|
-| `git init` | `startchain` — initialize the chain |
-| `git checkout <branch>` | Select a chain tip (parent block) to build on |
-| `git commit` | Build a new block with transactions |
-| `git commit -S` | Sign the block with a PQC key (Dilithium) |
-| `git push` / `git propose` | `propose` — broadcast block to the network for validation |
-| Branch (pointer to commit) | Chain tip / fork |
-| Competing branches | Chain forks resolved by canonical chain rule |
-| Merge | Consensus — one branch becomes canonical |
-
-### Decision
-
-Design the user-facing workflow and internal data model around git semantics:
-
-1. A node **checks out** the current heaviest chain tip (selects a parent block).
-2. The node **builds** a new block on top of it (adds transactions, computes hashes).
-3. The node **proposes** the block to the network (`propose`).
-4. Peers **validate** and, if accepted, extend the chain.
-
-### Rationale
-
-- Both git and blockchains are content-addressed DAGs — commits and blocks are identified by the hash of their content plus their parent's hash.
-- The mental model is familiar to developers.
-- Explicit fork management (intentional branching) is cleaner than implicit forks from simultaneous mining.
-- The existing CLI tools (`startchain`, `proposeblock`, `insertblock`) already reflect this workflow.
+**One function, one job.**
+Functions are short and named after what they do. `apply_common_security` in
+`network.c` encapsulates TLS 1.3 + PQC group setup once, shared by both server
+and client paths without duplication.
 
 ---
 
-## ADR-002: Canonical Chain Rule — GHOST
+### Testing Conventions
 
-**Date:** 2025-03
-**Status:** Adopted
+Every public `.h`/`.c` module has a corresponding `tests/test_<module>.c`
+using CMocka. A module is not complete until `make test` passes with that
+suite included.
 
-### Context
-
-When two valid competing chain branches exist (a fork), the network needs a deterministic rule to decide which branch is canonical. Options considered:
-
-- **Longest chain (Nakamoto)** — pick the branch with the most blocks.
-- **GHOST** — pick the branch whose subtree has the most total descendant blocks.
-- **BFT finality (Tendermint)** — require a 2/3 supermajority vote; no forks after finality.
-- **First-seen / FIFO** — trivially gameable, rejected.
-
-### Decision
-
-Adopt **GHOST** (Greedy Heaviest Observed Subtree) as the canonical chain rule.
-
-**How it works:**
-At a fork point, count all descendant blocks in each branch's subtree. The branch with the greater subtree weight wins — not just the longest tip.
-
-```
-A → B → C → D → E        (subtree weight: 5)
-              ↘ X → Y    (subtree weight: 2)
-```
-GHOST selects the branch ending at `E`.
-
-Block weight can be:
-- `1` per block (PoW mode — uniform weight)
-- `stake amount` of the proposer (PoS mode — stake-weighted)
-
-The `consensus` field in `Block` already distinguishes these two modes.
-
-### Rationale
-
-- **Best fit for the git analogy.** The "heaviest branch" wins, just as `main` wins in a real project because more contributors build on it. GHOST formalizes this.
-- **Fork resistant.** Unlike longest-chain, GHOST counts "uncle" blocks (valid blocks that arrived late) as weight, making fork attacks significantly more expensive.
-- **Works with both PoW and PoS** — weight metric is configurable.
-- **No energy cost on its own** — GHOST is a selection rule, not a consensus mechanism. It operates on top of whatever is used for block proposals.
-- **Production-validated.** LMD-GHOST is the fork choice rule used by Ethereum's Beacon Chain.
-
-### Implementation Notes
-
-- GHOST fork choice logic belongs in `blockchain.c`, likely as a helper called inside `validate()` or a new `fork_choice()` function.
-- The `chain.h` / `chain.c` split (currently untracked) may be the right home for this.
-
----
-
-## ADR-003: Proposer Requirements — Stake-Locked PQC Signature + VRF
-
-**Date:** 2025-03
-**Status:** Adopted
-
-### Context
-
-A proposer is a node that builds and broadcasts a new block. The network needs a mechanism to:
-1. Prevent Sybil attacks (fake nodes spamming proposals).
-2. Ensure proposals are quantum-resistant.
-3. Make proposer selection unpredictable to prevent manipulation.
-4. Stay feasible on low-power hardware (Raspberry Pi).
-
-Options considered:
-
-- **Proof of Work** — rejected; energy-intensive and uncompetitive on Pi hardware.
-- **Proof of Authority** — simple round-robin of known validators; no token economics needed but centralized.
-- **Stake-locked PQC signature** — proposer must hold locked stake and sign with a PQC key.
-- **Stake + VRF selection** — adds unpredictable, verifiable leader election on top of stake.
-
-### Decision
-
-A valid proposer must satisfy all three conditions:
-
-1. **Minimum stake locked** in the validator registry.
-2. **Selected for the current slot** by a VRF (Verifiable Random Function) — provably random, publicly verifiable, unpredictable in advance.
-3. **Block signed** with their **Dilithium** post-quantum key (available in `liboqs`).
-
-**Full propose flow:**
-
-```
-Validator locks stake (validator registry)
-        ↓
-VRF selects proposer for slot N
-        ↓
-Proposer: checkout heaviest GHOST tip
-        ↓
-Proposer: build block, sign with Dilithium key
-        ↓
-Proposer: broadcast to peers  (propose)
-        ↓
-Peers validate:
-  ✓ VRF proof valid?
-  ✓ Dilithium signature valid?
-  ✓ Proposer has sufficient stake?
-  ✓ Block extends correct GHOST tip?
-        ↓
-Block accepted → GHOST subtree weight updated
-```
-
-### Rationale
-
-| Concern | Solution |
-|---|---|
-| Raspberry Pi energy constraints | No PoW — signing a block is computationally cheap |
-| Quantum resistance | Dilithium signature replaces ECDSA (already in `liboqs`) |
-| Sybil resistance | Stake lockup — spinning up fake validators costs real tokens |
-| Selfish proposing | VRF — no validator can predict or game when they will be selected |
-| Git analogy | Signing a block mirrors `git commit -S` (signed commits) |
-
-### Implementation Notes
-
-- **Dilithium** is the target signature scheme; it is already available via `liboqs`. The README currently lists MSS — Dilithium should replace or supplement it as the primary signing algorithm for proposals.
-- **VRF** is not directly provided by `liboqs` but can be constructed from existing PQC primitives (hash + keypair). Algorand's VRF construction is a useful reference.
-- **Validator registry** is a new data structure needed in `storage.c` or a dedicated `validator.c` — tracks public keys and locked stake per validator.
-- This design is architecturally equivalent to a simplified Ethereum Beacon Chain (LMD-GHOST + Casper-FFG stake), which is a useful reference implementation.
-
----
-
-## ADR-004: Language Stack and Implementation Philosophy
-
-**Date:** 2026-03
-**Status:** Adopted
-
-### Decision
-
-- **Core implementation language: C.** All fundamental units (block, chain, storage, crypto, consensus, network) are written in C.
-- **C++ and Python: as needed.** Permitted for tooling, scripting, or components where they provide a clear advantage, but not for core chain logic.
-- **Native-first:** Minimize external, unmanaged libraries. Prefer standard library and OS primitives. External dependencies must be justified — currently only `liboqs` (PQC, no native alternative) and `OpenSSL` (TLS) are accepted.
-
-### Unit Testing Convention
-
-Every unit (a `.h`/`.c` pair) **must** have a corresponding test file in `tests/test_<unit>.c` using **CMocka**.
-
-**Test file structure** (established by `test_storage.c` and `test_blockchain.c`):
+**Standard test file structure:**
 
 ```c
 #include <stdarg.h>
@@ -266,180 +337,350 @@ Every unit (a `.h`/`.c` pair) **must** have a corresponding test file in `tests/
 #pragma clang diagnostic pop
 #endif
 
-// setup: runs before each test, allocates shared state via **state
-static int setup(void **state) { ... return 0; }
+static int setup(void **state)   { /* init shared state */ return 0; }
+static int teardown(void **state){ /* free state, rm -rf .chain */ return 0; }
 
-// teardown: runs after each test, frees state and cleans up side effects
-static int teardown(void **state) { ... return 0; }
-
-// individual test functions
-static void test_name(void **state) { ... }
+static void test_name(void **state) {
+    /* assert_* macros; never return an error code */
+}
 
 int main(void) {
+    log_set_stream(stderr);
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_name, setup, teardown),
     };
-    return cmocka_run_group_tests(tests, NULL, NULL);
+    return cmocka_run_group_tests_name("group", tests, NULL, NULL);
 }
 ```
 
 **Rules:**
 - One test file per unit: `tests/test_<unit>.c`
-- Test functions are `static void` — they use `assert_*` macros, never `return` an error code
-- `setup` and `teardown` clean up all side effects (files, memory, `.chain/` directory)
-- Tests link against debug objects (no `main.o`) via the Makefile `test` target
+- `setup`/`teardown` clean up all side effects including `.chain/` directories
+- Tests link against debug objects (no `main.o`) — see Makefile `test` target
+- Group tests by function under test: `cmocka_run_group_tests_name("insert", …)`
 - `make test` must pass before any code is considered complete
 
-### Rationale
+**Current test suite (213 tests across 14 suites):**
 
-- C keeps the implementation close to the metal, which is essential for Raspberry Pi performance.
-- Native-first reduces dependency management burden and improves portability across Linux/macOS.
-- Per-unit CMocka tests enforce a clear boundary between units and catch regressions early.
-- The clang pragma guard pattern (already in existing tests) ensures the test files compile cleanly under both GCC and Clang.
+| Suite | Tests | Covers |
+|---|---|---|
+| `test_block` | 12 | create, compute_hash, verify_hash, free |
+| `test_chain` | 18 | load, unload, validate, add, propose |
+| `test_consensus` | 8 | verify_consensus (PoW/PoS/unknown), verify_block_signature stub |
+| `test_crypto` | 20 | SHA-256 NIST vector, OpenSSL cross-check, block_hash, Merkle root |
+| `test_integration_miner` | 9 | PoW end-to-end, chain growth, tamper rejection |
+| `test_integration_payment` | 6 | Payment flow, batch, multi-block, invalid amount, tamper |
+| `test_log` | 8 | Stream routing, level gating, DEBUG guard, format |
+| `test_main` | 23 | All CLI subcommands via `popen` subprocess tests |
+| `test_network` | 25 | context lifecycle, serialize, deserialize, broadcast arg validation |
+| `test_pos` | 13 | init, stake, select (deterministic), validate |
+| `test_pow` | 13 | mine, validate, midstate correctness |
+| `test_sha256` | 16 | FIPS 180-4, incremental vs one-shot, boundary lengths |
+| `test_storage` | 26 | insert, read, exists, head, checkout, scan |
+| `test_transaction` | 15 | constants, struct size, sign, verify, tamper detection |
 
 ---
 
-## ADR-005: Storage Module Design — Git-Style Object Store and Ref Management
+## Part III — Architecture Decision Records
 
-**Date:** 2026-03
-**Status:** Adopted
-**Files:** `inc/storage.h`, `src/storage.c`, `tests/test_storage.c`
+---
 
-### Context
+### ADR-001: Git-Like Blockchain Model
 
-The storage module is responsible for persisting blocks to disk and tracking the current chain tip. The original implementation had the following problems that needed to be resolved:
+**Date:** 2025-03 · **Status:** Adopted
 
-- `storage_head()` returned a heap-allocated `char *` that callers consistently forgot to free — memory leak on every call.
-- `storage_move()` called `memcmp` on the potentially NULL return value of `storage_head()` — undefined behavior.
-- `storage_scan()` returned a count that was always one less than the actual number of blocks read (off-by-one at genesis detection).
-- `fwrite` and `fread` return values were not checked — silent data corruption went undetected.
-- `storage_insert()` always updated HEAD — object storage and ref management were incorrectly coupled.
-- `HEAD` stored the raw block hash directly, diverging from git's symbolic ref model. The `refs/` directory was created by `init()` but never used.
-- No way to check block existence without allocating and reading the entire block.
+#### Context
 
-### Decision — On-Disk Layout
+The goal of QuteChain is to create a blockchain that operates like git. Both
+systems are content-addressed DAGs: commits and blocks are identified by the
+hash of their content plus their parent's hash.
 
-The `.chain/` directory mirrors git's `.git/` repository structure exactly:
+| Git operation | Blockchain equivalent |
+|---|---|
+| `git init` | `blocky init` — initialize chain, create genesis block |
+| `git checkout <branch>` | Select chain tip (parent block) to build on |
+| `git add` | `blocky send` — stage a transaction |
+| `git commit` | `blocky commit` — build and mine a block |
+| `git commit -S` | Sign block with Dilithium key (ADR-003) |
+| `git push` | `blocky propose` — broadcast block to peers |
+| Branch pointer | Chain tip / fork |
+| Competing branches | Chain forks resolved by canonical chain rule |
+| Merge | Consensus — one branch becomes canonical |
+
+#### Decision
+
+Design the workflow and data model around git semantics:
+
+1. A node **checks out** the current heaviest chain tip (selects a parent block)
+2. The node **builds** a new block on top of it (stages transactions, computes hashes)
+3. The node **proposes** the block to the network
+4. Peers **validate** and, if accepted, extend the chain
+
+#### Rationale
+
+The mental model is familiar to developers. Explicit fork management is cleaner
+than implicit forks from simultaneous mining. The git analogy makes the two-step
+`send` + `commit` workflow intuitive as the blockchain equivalent of `git add`
+then `git commit`.
+
+---
+
+### ADR-002: Canonical Chain Rule — GHOST
+
+**Date:** 2025-03 · **Status:** Adopted
+
+#### Context
+
+When two valid competing chain branches exist, the network needs a deterministic
+rule to decide which is canonical. Options considered:
+
+- **Longest chain (Nakamoto)** — pick the branch with the most blocks
+- **GHOST** — pick the branch whose subtree has the most total descendants
+- **BFT finality (Tendermint)** — require 2/3 supermajority vote
+- **First-seen / FIFO** — trivially gameable, rejected
+
+#### Decision
+
+Adopt **GHOST** (Greedy Heaviest Observed Subtree).
+
+At a fork point, count all descendant blocks in each branch's subtree. The
+branch with the greater subtree weight wins — not just the longest tip:
+
+```
+A → B → C → D → E        (subtree weight: 5)
+              ↘ X → Y    (subtree weight: 2)
+```
+
+GHOST selects the branch ending at `E`.
+
+Block weight is:
+- `1` per block in PoW mode (uniform weight)
+- `stake amount` of the proposer in PoS mode (stake-weighted)
+
+The `consensus` field in `Block` already distinguishes these two modes.
+
+#### Rationale
+
+- **Fork resistant** — unlike longest-chain, GHOST counts "uncle" blocks as
+  weight, making fork attacks significantly more expensive.
+- **Works with both PoW and PoS** — weight metric is pluggable.
+- **Production-validated** — LMD-GHOST is the fork choice rule used by
+  Ethereum's Beacon Chain.
+- **Best fit for the git analogy** — the "heaviest branch" wins, just as `main`
+  wins in a real project because more contributors build on it.
+
+#### Implementation Status
+
+GHOST fork-choice logic (`fork_choice()`) is pending. It belongs in `chain.c`
+as a helper called by `chain_validate` or a new `chain_fork_choice` function.
+
+---
+
+### ADR-003: Proposer Requirements — Stake + VRF + Dilithium
+
+**Date:** 2025-03 · **Status:** Adopted (design); implementation pending
+
+#### Context
+
+A proposer is a node that builds and broadcasts a new block. The network needs:
+1. Sybil resistance — fake nodes cannot spam proposals cheaply
+2. Quantum-resistant signatures — block proposals signed with PQC keys
+3. Unpredictable leader selection — no validator can game when they are selected
+4. Feasibility on Raspberry Pi hardware
+
+#### Decision
+
+A valid proposer must satisfy all three conditions:
+
+1. **Minimum stake locked** in the validator registry
+2. **Selected for the current slot** by a VRF (Verifiable Random Function)
+3. **Block signed** with a **Dilithium-3** post-quantum key
+
+Full propose flow:
+
+```
+Validator locks stake (validator registry)
+        ↓
+VRF selects proposer for slot N
+        ↓
+Proposer: checkout heaviest GHOST tip
+        ↓
+Proposer: build block, sign with Dilithium-3 key
+        ↓
+Proposer: broadcast to peers
+        ↓
+Peers validate:
+  ✓ VRF proof valid?
+  ✓ Dilithium-3 signature valid?
+  ✓ Proposer has sufficient stake?
+  ✓ Block extends correct GHOST tip?
+        ↓
+Block accepted → GHOST subtree weight updated
+```
+
+#### Rationale
+
+| Concern | Solution |
+|---|---|
+| Raspberry Pi energy | No PoW — signing is computationally cheap |
+| Quantum resistance | Dilithium-3 replaces ECDSA (available in `liboqs`) |
+| Sybil resistance | Stake lockup — spinning up fake validators costs real tokens |
+| Selfish proposing | VRF — no validator can predict or game their selection slot |
+| Git analogy | Signing a block mirrors `git commit -S` (signed commits) |
+
+#### Implementation Notes
+
+- **Dilithium-3** is the target signature scheme; it is already available via
+  `liboqs`. Transaction signing (`sign_transaction` / `verify_transaction`) is
+  fully implemented. Block-level signing (`verify_block_signature`) is a stub
+  returning `EXIT_FAILURE` pending the validator registry.
+- **VRF** is not directly provided by `liboqs` but can be constructed from PQC
+  primitives. Algorand's VRF construction is a useful reference.
+- **Validator registry** — new `validator.c` or extension of `storage.c` —
+  tracks public keys and locked stake per validator ID.
+- This design is architecturally equivalent to a simplified Ethereum Beacon
+  Chain (LMD-GHOST + Casper-FFG stake).
+
+---
+
+### ADR-004: Language Stack and Implementation Philosophy
+
+**Date:** 2026-03 · **Status:** Adopted
+
+#### Decision
+
+- **Core language: C.** All fundamental units (block, chain, storage, crypto,
+  consensus, network) are written in C.
+- **C++ and Python: as needed** for tooling or scripting, not for core chain
+  logic.
+- **Native-first:** minimize external dependencies. Only `liboqs` (PQC, no
+  native alternative) and `OpenSSL` (TLS) are accepted. `cmocka` is test-only.
+
+#### Rationale
+
+- C keeps the implementation close to the metal — essential for Raspberry Pi
+  performance and memory predictability.
+- Native-first reduces dependency management burden and improves portability
+  across Linux and macOS.
+- Per-unit CMocka tests enforce clear module boundaries and catch regressions
+  early.
+
+---
+
+### ADR-005: Storage Module — Git-Style Object Store
+
+**Date:** 2026-03 · **Status:** Adopted · **Files:** `inc/storage.h`, `src/storage.c`
+
+#### Context — Problems in Original storage.c
+
+| Bug | Severity |
+|---|---|
+| `storage_head()` returned heap-allocated `char *` — consistently leaked | High |
+| `storage_move()` called `memcmp` on potentially NULL `storage_head()` return | High |
+| `storage_scan()` count was always one less than actual (off-by-one at genesis) | High |
+| `fwrite`/`fread` return values not checked — silent data corruption | High |
+| `storage_insert()` always updated HEAD — object store and ref management coupled | Medium |
+| `HEAD` stored raw hash directly — diverged from git's symbolic ref model | Medium |
+| No way to check block existence without reading the entire block | Low |
+
+#### Decision — On-Disk Layout
+
+The `.chain/` directory mirrors git's `.git/` structure:
 
 ```
 .chain/
 ├── blocks/              ← object store: one binary file per block, named by hash
-│   ├── a1b2c3d4...      ← serialized Block struct
-│   └── ...
+│   └── a1b2c3…          ← serialized Block struct (binary, fwrite/fread)
 ├── refs/
 │   └── heads/
-│       └── main         ← plain text file containing the tip block hash
-└── HEAD                 ← plain text file containing "ref: refs/heads/main"
+│       └── main         ← plain text: the tip block hash
+└── HEAD                 ← plain text: "ref: refs/heads/main"
 ```
 
-**HEAD resolution chain:**
-```
-HEAD  →  "ref: refs/heads/main"  →  .chain/refs/heads/main  →  <block hash>
-```
+`storage_checkout()` updates the branch file (`refs/heads/main`), not `HEAD`
+itself — identical to `git checkout`. Detached HEAD (raw hash in HEAD) is also
+supported for inspecting specific blocks.
 
-This two-level indirection mirrors git exactly:
-- `HEAD` is a **symbolic ref** pointing to the current branch name.
-- The branch file (`refs/heads/main`) holds the actual block hash.
-- `storage_checkout()` updates the **branch file**, not `HEAD` itself — identical to how `git checkout` works.
-- A detached HEAD (HEAD contains a raw hash directly) is also supported, for the case where a node is inspecting a specific block without being on a named branch.
+#### Decision — Public API
 
-### Decision — Public API
-
-Six public functions, intentionally minimal:
-
-| Function | Purpose |
+| Function | Behaviour |
 |---|---|
-| `storage_insert(block)` | Write block to object store only. Idempotent. Does **not** update HEAD. |
+| `storage_insert(block)` | Write block to object store. Idempotent. Does **not** update HEAD. |
 | `storage_read(hash)` | Read and return a block by hash. Caller frees. |
 | `storage_exists(hash)` | Check if block file exists. No allocation, no file open. |
 | `storage_head(buf, size)` | Resolve HEAD → ref → hash into caller-provided buffer. |
-| `storage_checkout(hash)` | Advance the current branch tip to hash. Verifies block exists first. |
+| `storage_checkout(hash)` | Advance branch tip to hash. Verifies block exists first. |
 | `storage_scan(offset, count)` | Walk chain backwards from HEAD, return array of hashes. |
 
-Two internal helpers (not exported):
-- `ref_read(path, buf, size)` — read one line from a ref file, strip newline.
-- `ref_write(path, value)` — write a value to a ref file with `fflush` + `fsync`.
+**Insert and checkout are separate operations** — a node must be able to store
+a received block for validation without immediately making it HEAD.
 
-### Key Design Principles
+**`storage_exists()` uses `access(F_OK)`** — no allocation, safe to call
+frequently in the deduplication path.
 
-**Insert and checkout are separate operations.**
-`storage_insert()` writes a block to the object store and returns. It does not touch HEAD or any ref. The caller explicitly calls `storage_checkout()` to advance the chain tip. This matches git's `git hash-object` vs `git update-ref` separation and is critical for handling incoming blocks from the network — a node must be able to store a received block for validation without immediately making it HEAD.
+**Durability: `fsync` on all writes.** Block files and ref files are flushed
+with `fflush` + `fsync` before `fclose`. A block file that fails to write
+completely is deleted before returning failure.
 
-**Caller-owned buffers for `storage_head()`.**
-Instead of allocating and returning a `char *` (which callers forget to free), `storage_head()` fills a caller-provided buffer. This eliminates the class of memory leaks entirely.
+**Genesis sentinel.** Genesis `previous_hash` is `"0"` (ASCII zero + null).
+`GENESIS_PREVIOUS_HASH` is exported so all modules use the same constant.
+`storage_scan()` detects genesis by checking `previous_hash[0] == '0' &&
+previous_hash[1] == '\0'`.
 
-**`storage_checkout()` verifies existence.**
-Before updating any ref, `storage_checkout()` calls `storage_exists()` to confirm the target block is actually on disk. This prevents HEAD from pointing to a nonexistent block — equivalent to git refusing to checkout a commit that isn't in the object store.
+#### `storage_scan()` Walk Semantics
 
-**`storage_exists()` uses `access(F_OK)` — no allocation.**
-Checking for block existence is a common operation (deduplication, pre-validation). Using `access()` avoids opening the file or allocating memory, making it safe to call frequently.
-
-**Durability: `fsync` on all writes.**
-Both block files and ref files are flushed with `fflush()` + `fsync()` before `fclose()`. This ensures that on a crash (power loss on Raspberry Pi), neither a partial block write nor a partial HEAD update can leave the chain in a corrupt state. A block file that fails to write completely is deleted via `remove()` before returning failure.
-
-**Idempotent insert.**
-If a block with the same hash already exists on disk, `storage_insert()` returns `EXIT_SUCCESS` immediately without re-writing. This makes re-processing safe (e.g., network retransmits).
-
-**Genesis sentinel.**
-The genesis block's `previous_hash` is set to the string `"0"` (a single ASCII zero character followed by null). The `GENESIS_PREVIOUS_HASH` constant is exported from `storage.h` so all modules use the same sentinel consistently. `storage_scan()` detects genesis by checking `previous_hash[0] == '0' && previous_hash[1] == '\0'`.
-
-### `storage_scan()` Walk Semantics
-
-Walks the chain **backwards** from HEAD (newest → oldest), following `previous_hash` links. Returns an array of heap-allocated hash strings. Caller frees each entry and then the outer array.
+Walks the chain backwards from HEAD (newest → oldest):
 
 ```
-HEAD → block[4] → block[3] → block[2] → block[1] → block[0 / genesis]
+HEAD → block[4] → block[3] → block[2] → block[1] → block[0/genesis]
+
 scan(offset=0, count=5) → [hash4, hash3, hash2, hash1, hash0]
-scan(offset=2, count=5) → [hash2, hash1, hash0]          ← skips 2 from HEAD
+scan(offset=2, count=5) → [hash2, hash1, hash0]    ← skips 2 from HEAD
 ```
 
-`*count` is updated to the actual number returned. Returns `NULL` if the chain is empty or offset exceeds the chain length.
+`*count` is updated to the actual number returned.
 
-### Test Coverage (`tests/test_storage.c`)
+#### Test Coverage
 
-22 tests across 6 named groups, each with isolated `setup`/`teardown`:
+22 tests across 6 groups in `tests/test_storage.c`:
 
 | Group | Tests |
 |---|---|
 | `insert` | null block, empty hash, valid block, duplicate (idempotent) |
-| `read` | valid block (field verification), null hash, empty hash, nonexistent hash |
+| `read` | valid block (field verification), null hash, empty hash, nonexistent |
 | `exists` | after insert, nonexistent, null hash |
 | `head` | before checkout (empty ref → FAILURE), after checkout, invalid buffer |
-| `checkout` | null hash, empty hash, nonexistent hash, valid hash, already at head (no-op) |
-| `scan` | null count, empty chain, single block, multiple blocks (order), count capped, offset, offset past genesis |
-
-Three setup functions provide isolation:
-- `setup_empty` — removes `.chain/`, no state
-- `setup_genesis` — inserts + checks out a genesis block
-- `setup_chain` — builds a 5-block linked chain, HEAD at tip
+| `checkout` | null, empty, nonexistent, valid, already-at-head (no-op) |
+| `scan` | null count, empty chain, single block, multiple (order), capped, offset, offset past genesis |
 
 ---
 
-## ADR-006: Block/Chain Module Split — Pool Allocator and Runtime Pointer Fix
+### ADR-006: Block/Chain Split — Pool Allocator
 
-**Date:** 2026-03
-**Status:** Adopted
-**Files:** `inc/block.h`, `src/block.c`, `inc/chain.h`, `src/chain.c`
+**Date:** 2026-03 · **Status:** Adopted · **Files:** `inc/block.h`, `inc/chain.h`, `src/block.c`, `src/chain.c`
 
-### Context
+#### Context — Problems in Original blockchain.c
 
-`blockchain.c` was a monolith that mixed the `Block` data type, single-block operations, and chain-level operations. It also had two architectural bugs:
+The original monolith mixed the `Block` type, single-block operations, and
+chain-level operations. Two architectural bugs were found:
 
-1. **`Block.next` written to disk.** `storage_insert()` called `fwrite(block, sizeof(Block), 1, file)` — the runtime `next` pointer was serialised as raw memory. When read back via `fread`, the field contains a garbage address. `validate()` dereferenced this garbage pointer, causing a crash.
-2. **Hidden global state.** `Block *chain = NULL` was a file-scoped global, making multiple chain instances and clean teardown in tests difficult.
+1. **`Block.next` written to disk.** `fwrite(block, sizeof(Block), 1, f)`
+   serialized the runtime `next` pointer as raw memory. When read back, the
+   field contained a garbage address. `validate()` dereferenced it — crash.
 
-### Decision
+2. **Hidden global state.** `Block *chain = NULL` was file-scoped, making
+   multiple chain instances and clean teardown in tests impossible.
 
-Split `blockchain.c/.h` into two units:
+#### Decision — Module Split
 
 | Unit | Responsibility |
 |---|---|
-| `block.h / block.c` | `Block` data type + single-block operations (`create`, `compute_hash`, `verify_hash`, `free`) |
-| `chain.h / chain.c` | In-memory chain with pool allocator; public chain API (`load`, `unload`, `validate`, `add`, `propose`, `info`, `show`, `list`) |
+| `block.h / block.c` | `Block` type + single-block ops: `create`, `compute_hash`, `verify_hash`, `free` |
+| `chain.h / chain.c` | In-memory chain with pool allocator: `load`, `unload`, `validate`, `add`, `propose` |
 
-`blockchain.h` becomes a compatibility shim that includes both headers — existing code that includes `blockchain.h` continues to compile.
+`blockchain.h` is kept as a compatibility shim that includes both headers.
 
-### Pool Allocator Design
+#### Pool Allocator Design
 
 ```c
 #define CHAIN_POOL_SIZE 64
@@ -451,81 +692,129 @@ typedef struct {
 } Chain;
 ```
 
-- `Chain` is heap-allocated once by `chain_load()`. The pool is embedded — no per-block `malloc` after init.
-- `pool_alloc(c)` scans `pool_used` for a free slot, marks it, returns `&pool[i]`.
-- `pool_free(c, b)` uses pointer arithmetic (`b - c->pool`) to locate and clear the slot.
-- At steady state only **one slot is occupied**: the current chain tip. When `chain_add()` installs a new block, the old head slot is freed immediately after (it is already persisted to disk).
-- Pool exhaustion returns `EXIT_FAILURE` from `chain_add()`. With CHAIN_POOL_SIZE = 64 this is unreachable in normal operation but tested explicitly.
+- `Chain` is heap-allocated once by `chain_load()`. No per-block `malloc` after
+  init.
+- At steady state **one slot is occupied**: the current chain tip. When
+  `chain_add()` installs a new block, the old head slot is freed immediately
+  (it is already persisted to disk).
+- Pool exhaustion returns `EXIT_FAILURE`. With `CHAIN_POOL_SIZE = 64` this is
+  unreachable in normal operation but tested explicitly.
 
-### `Block.next` Fix
+#### `Block.next` Fix
 
 `Block.next` is a **runtime-only** pointer. It must never reach disk:
 
-- `storage_insert()` writes a **stack copy** of the block with `copy.next = NULL`.
-- `storage_read()` and `storage_read_into()` set `block->next = NULL` after `fread`.
-- `chain_validate()` and `chain_add()` never dereference `next`; they rely on `previous_hash` for chain linkage.
+- `storage_insert()` writes a stack copy with `copy.next = NULL`
+- `storage_read()` sets `block->next = NULL` after `fread`
+- `chain_validate()` and `chain_add()` never dereference `next`; chain linkage
+  uses `previous_hash`
 
-### Removed API
+#### Test Coverage
 
-`load()`, `validate()`, `unload()`, `add()`, `propose()`, `info()`, `show()`, `list()` are removed. Their replacements are prefixed with `chain_`:
+**`test_block.c`** — 12 tests: create, compute, verify, free.
 
-| Old | New |
-|---|---|
-| `load()` | `chain_load()` |
-| `validate(block)` | `chain_validate(c, block)` |
-| `unload()` | `chain_unload(c)` |
-| `add(block)` | `chain_add(c, block)` |
-| `propose(block)` | `chain_propose(c, block)` (stub) |
-| `info()` | `chain_info(c)` |
-| `show(hash)` | `chain_show(c, hash)` |
-| `list(n)` | `chain_list(c, n)` |
-
-### Rationale
-
-- **No C++ / smart pointers needed.** A C pool allocator gives the same zero-allocation-after-init benefit with no ABI complications and is compatible with the native-first (ADR-004) constraint.
-- **Explicit `Chain *` parameter** eliminates hidden global state, makes tests clean (each test creates/destroys its own `Chain`), and allows multiple chain instances.
-- **`block_verify_hash()`** verifies integrity without modifying the original block: copies to stack, calls `hash()` on the copy, compares. This is the correct pattern for validation.
-- **`storage_read_into(hash, out)`** fills a pool slot directly — no intermediate `malloc`/`free` for the common case.
-
-### Test Coverage
-
-**`tests/test_block.c`** — 12 tests across 4 groups:
-
-| Group | Tests |
-|---|---|
-| `create` | genesis sentinel, non-genesis (copies prev hash), sets timestamp, next is NULL |
-| `compute` | hash is non-empty after call, deterministic (same fields → same hash) |
-| `verify` | NULL block, valid block, corrupted hash field, tampered header field |
-| `free` | NULL (no crash), valid block |
-
-**`tests/test_chain.c`** — 15 tests across 4 groups:
+**`test_chain.c`** — 18 tests:
 
 | Group | Tests |
 |---|---|
 | `load` | creates genesis on empty chain, loads existing HEAD, two independent loads agree |
 | `unload` | NULL is safe |
 | `validate` | NULL chain, NULL block, valid next block, wrong previous_hash, tampered hash |
-| `add` | NULL args, advances head, updates storage HEAD, `next` is NULL on disk (key fix), invalid block rejected, pool exhaustion |
+| `add` | NULL args, advances head, updates storage HEAD, `next` is NULL on disk, invalid rejected, pool exhaustion |
+| `propose` | NULL chain, NULL block, no peers file (returns EXIT_SUCCESS) |
 
 ---
 
-## ADR-008: CLI Design — Git-Like Command Dispatcher in `main.c`
+### ADR-007: Crypto Module — Self-Contained SHA-256
 
-**Date:** 2026-03
-**Status:** Adopted
-**Files:** `src/main.c`
+**Date:** 2026-03 · **Status:** Adopted · **Files:** `inc/sha256.h`, `src/sha256.c`, `inc/crypto.h`, `src/crypto.c`
 
-### Context
+#### Context — Bugs in Original crypto.c
 
-`main.c` was a placeholder that checked argument count and printed a version string. The chain API (`chain.h`, `block.h`, `storage.h`, `crypto.h`) was fully implemented and tested. A user-facing CLI was needed to expose it.
+| Bug | Severity | Detail |
+|---|---|---|
+| Hash truncated to 32 chars | Critical | `memcpy(block->hash, hash_hex, SHA256_DIGEST_LENGTH)` copied 32 of 64 hex chars |
+| `consensus` omitted from hash | High | Changing PoW↔PoS produced the same block hash |
+| Merkle root used only `sender` | High | `recipient` and `amount` ignored — different transactions could produce the same root |
+| Deprecated OpenSSL SHA API | Medium | `SHA256_Init/Update/Final` deprecated in OpenSSL 3.x |
+| NULL dereference before NULL check | Medium | `log_info(block->index)` ran before `if (!block)` |
+| `sign()`/`verify()` declared but undefined | Medium | Linker error if called |
 
-The design goals were:
+#### Decision — Self-Contained SHA-256
+
+Replace OpenSSL's SHA-256 with a clean implementation of FIPS 180-4. OpenSSL
+stays in the build for TLS only.
+
+| Goal | Why |
+|---|---|
+| Small | ~130 lines, zero dependencies |
+| Auditable | Every line checkable against FIPS 180-4 §5 |
+| Portable | Pure C99 — works on Raspberry Pi, macOS, Linux |
+| Native-first | Aligns with ADR-004; no external SHA in hot path |
+
+**Alternative considered: Monocypher (Blake2b).** Faster, formally audited,
+used in WireGuard. Not chosen because it changes the hash format (not SHA-256
+compatible). Remains a valid future choice if the hash format is renegotiated.
+
+#### sha256.h / sha256.c API
+
+```c
+void sha256_init  (sha256_ctx *ctx);
+void sha256_update(sha256_ctx *ctx, const void *data, size_t len);
+void sha256_final (sha256_ctx *ctx, uint8_t digest[SHA256_DIGEST_LEN]);
+void sha256_digest(const void *data, size_t len, uint8_t out[SHA256_DIGEST_LEN]);
+void sha256_to_hex(const uint8_t *bytes, size_t len, char *out);
+```
+
+`sha256_final` wipes the context after producing the digest (no state leakage).
+`sha256_to_hex` is the shared hex encoder used by `crypto.c` and `pow.c`,
+eliminating the DRY violation between two identical `to_hex`/`bytes_to_hex`
+static functions.
+
+#### Fixes Applied to crypto.c
+
+1. Hash length: `sha256_to_hex` writes all 64 hex chars; `HASH_SIZE = 65` fully
+   utilised
+2. `consensus` field added to block hash input
+3. `compute_merkle_root`: feeds `sender + recipient + amount + nonce` via
+   incremental `sha256_update`
+4. NULL check moved before `log_info`
+5. `sign()`/`verify()` stubs renamed to `block_sign()`/`block_verify_sig()` and
+   return `EXIT_FAILURE` with ADR-003 reference
+
+#### Test Coverage
+
+20 tests across 5 groups in `test_crypto.c`:
+
+| Group | Tests |
+|---|---|
+| `sha256/nist` | FIPS 180-4 known answer: SHA-256("") |
+| `sha256/vs_openssl` | Cross-validation vs OpenSSL: 1, 5, 55, 56, 64, 200, 256 bytes |
+| `sha256/incremental` | Byte-by-byte matches one-shot; deterministic; different inputs differ |
+| `block_hash` | Full 64-char output; nonce change; consensus change; NULL block |
+| `merkle` | Empty → "0"; NULL args safe; full 64-char root; different amounts differ |
+
+The 55-byte and 56-byte tests specifically exercise the two padding paths in
+`sha256_final` (single-block vs two-block padding).
+
+---
+
+### ADR-008: CLI Design — Git-Like Command Dispatcher
+
+**Date:** 2026-03 · **Status:** Adopted · **Files:** `src/main.c`
+
+#### Context
+
+`main.c` was a placeholder. The chain API was fully implemented and tested. A
+user-facing CLI was needed.
+
+Design goals:
 - Mirror git's UX (subcommand dispatch, familiar flag names)
-- Two-step transaction flow: `send` stages, `commit` builds the block (like `git add` + `git commit`)
-- No new source files or headers — `main.c` only
-- Clean separation: user-facing output to stdout, operational logs to stderr via `log_*`
+- Two-step transaction flow: `send` stages, `commit` builds the block
+- No new source files — `main.c` only
+- User output to stdout; operational logs to stderr via `log_*`
 
-### Decision — Command Set
+#### Decision — Command Set
 
 | Command | Behaviour |
 |---|---|
@@ -533,170 +822,75 @@ The design goals were:
 | `status` | Prints chain tip + count of staged transactions |
 | `log [--limit N]` | `storage_scan` + one-liner per block (default 10) |
 | `show <hash>` | Formatted block fields to stdout |
-| `cat <hash>` | Raw field dump (all fields, including PoW/PoS label) |
+| `cat <hash>` | Raw field dump (all fields, PoW/PoS label) |
 | `verify <hash>` | `block_verify_hash()` → prints `OK` or `FAIL` |
 | `send --from <s> --to <r> --amount <a>` | Appends one line to `.chain/STAGED` |
-| `commit` | Reads STAGED → `block_create` → `compute_merkle_root` → `chain_add` → unlinks STAGED |
-| `propose` | Stub; prints "not yet implemented" |
-| `version` | Prints version string, no chain load |
+| `commit` | Reads STAGED → `block_create` → `compute_merkle_root` → `mine_block` → `chain_add` → unlinks STAGED |
+| `propose` | `chain_propose(c, c->head)` → reads `.chain/peers`, broadcasts via TLS |
+| `version` | Prints version string |
 | `help [command]` | Usage summary or per-command help |
 
-Exit codes: `0` success · `1` usage/argument error · `2` chain/storage runtime error.
+Exit codes: `0` success · `1` usage/argument error · `2` chain/storage runtime
+error.
 
-### Decision — Staging Area
+#### Decision — Staging Area
 
 Transactions are staged in `.chain/STAGED`, a tab-separated text file:
 
 ```
-alice\tbob\t10.000000\n
-alice\tcarol\t5.000000\n
+alice\tbob\t10500000\n
+alice\tcarol\t5000000\n
 ```
 
-- `send` appends one line and enforces the `MAX_TRANSACTIONS` (10) cap.
-- `commit` parses all lines, builds the block, then `unlink`s the file.
-- `status` counts newlines in the file to report pending transactions.
-- `.chain/` is created by `chain_load()`, which `send` and `commit` call first, so the directory always exists before STAGED is opened.
+- `send` appends one line and enforces the `MAX_TRANSACTIONS` (10) cap
+- `commit` parses all lines, mines the block, then `unlink`s the file
+- `status` counts newlines to report pending transactions
+- `.chain/` is created by `chain_load()` first, so the directory always exists
+  before STAGED is opened
 
-The staging file is a runtime artefact — it is never committed to git and is removed by `make clean` (which deletes `.chain/`).
+The staging file is a runtime artefact — removed by `make clean`.
 
-### Decision — Dispatch Table
+#### Decision — Dispatch Table
 
 ```c
 typedef struct { const char *name; int (*fn)(int, char **); } Cmd;
-static const Cmd CMDS[] = { ... };
+static const Cmd CMDS[] = { {"init", cmd_init}, {"send", cmd_send}, … };
 ```
 
-`main()` iterates the table with `strcmp` and calls the matching handler with the full `argc`/`argv`. Each handler does its own flag parsing. Unknown commands print an error and return 1.
+`main()` iterates the table with `strcmp`. Each handler does its own flag
+parsing. Unknown commands print an error and return `1`.
 
-### Design Trade-offs
+#### Design Trade-offs
 
-**Two-step `send` + `commit` vs single `transfer` command.**
-A single command would be simpler but loses the ability to batch multiple transactions into one block. The two-step model is consistent with ADR-001's git analogy and is how every real blockchain wallet works.
+**Two-step `send` + `commit` vs single `transfer` command.** A single command
+loses the ability to batch multiple transactions into one block. The two-step
+model matches ADR-001's git analogy and how every real blockchain wallet works.
 
-**`--from`/`--to` accept plain name strings.**
-For now, sender and recipient are stored as-is in `Transaction.sender`/`.recipient` (both `char[1024]`). When Dilithium signing is wired in (ADR-003), these fields will hold public keys. The field size already accommodates a PQC public key — the label strings used now are a temporary convenience.
+**`--from`/`--to` accept plain name strings.** When Dilithium signing is wired
+in (ADR-003), these fields will hold public keys. The field size (`MAX_PUBLIC_KEY_LENGTH = 1952`) already accommodates a Dilithium-3 public key.
 
-**`chain_info()`/`chain_list()`/`chain_show()` are not used by the CLI.**
-Those functions output via `log_info` (stderr) and were designed as internal diagnostic aids. The CLI commands (`status`, `log`, `show`) re-implement output with `printf` to stdout for proper UX. The chain API functions are retained for programmatic/debug use.
-
-**`propose` is a stub.**
-It prints "not yet implemented" and returns 0. Wiring it to real network broadcast (ADR-003) is deferred until the validator registry and VRF are implemented. A stub exit code of 0 (not 2) avoids breaking scripts that probe whether the command exists.
-
-### Rationale
-
-- Keeping everything in `main.c` (no new headers/source) respects ADR-004's native-first, minimum-complexity principle. The CLI is ~280 lines; abstraction layers would add more lines than they save.
-- A static dispatch table is the simplest correct pattern for a small, fixed command set. `strcmp` over 11 entries has negligible cost.
-- Tab-separated text for STAGED is human-readable, trivially parseable with `strchr`, and requires no external library.
+**`commit` mines PoW.** `cmd_commit` sets `b->consensus = CONSENSUS_POW` and
+calls `mine_block(b, DIFFICULTY)`. Committed blocks are real PoW blocks and
+pass `chain_validate`'s consensus check on the first attempt.
 
 ---
 
-## ADR-007: Crypto Module — Self-Contained SHA-256, Remove OpenSSL SHA Dependency
+### ADR-009: Transaction Module — Dilithium Sizes, Integer Amounts, Replay Protection
 
-**Date:** 2026-03
-**Status:** Adopted
-**Files:** `inc/sha256.h`, `src/sha256.c`, `inc/crypto.h`, `src/crypto.c`, `tests/test_crypto.c`
+**Date:** 2026-03 · **Status:** Adopted · **Files:** `inc/transaction.h`, `src/transaction.c`
 
-### Context — Bugs Found in Original crypto.c
-
-A review of the original `crypto.c` found the following issues:
-
-| Bug | Severity | Detail |
-|---|---|---|
-| Hash truncated to 32 chars | Critical | `memcpy(block->hash, hash_hex, SHA256_DIGEST_LENGTH)` copied 32 of 64 hex chars. SHA-256 output was silently halved. |
-| `consensus` field omitted from hash | High | Changing PoW↔PoS produced the same block hash. |
-| `compute_merkle_root` used only `sender` | High | `recipient` and `amount` were ignored — two different transactions with the same sender produced the same Merkle root. |
-| Deprecated OpenSSL SHA API | Medium | `SHA256_Init/Update/Final` deprecated in OpenSSL 3.x; EVP interface required. |
-| NULL dereference before NULL check | Medium | `log_info("Hashing block %u", block->index)` ran before `if (block == NULL)`. |
-| `sign()`/`verify()` declared, not defined | Medium | Calling either function would cause a linker error. |
-| `puts()` in `compute_merkle_root` | Low | Bypassed the log framework. |
-| No `#ifndef` guard on `HASH_SIZE` | Low | Double-define if included after `storage.h`. |
-
-### Decision — Self-Contained SHA-256
-
-Replace OpenSSL's SHA-256 with a clean, self-contained implementation of FIPS 180-4. OpenSSL stays in the build for TLS only.
-
-**Rationale:**
-
-| Goal | Why |
-|---|---|
-| Small | `sha256.h` + `sha256.c`: ~130 lines, zero dependencies. No OpenSSL EVP overhead. |
-| Auditable | SHA-256 is a NIST-published standard (FIPS 180-4). Every line can be checked against the spec. No trust required beyond the published algorithm. |
-| Portable | Pure C99. Works on Raspberry Pi, macOS, Linux without build system changes. |
-| No deprecated API | Removes all `SHA256_Init/Update/Final` calls from the build. |
-| Native-first | Aligns with ADR-004: minimise unmanaged external dependencies. |
-
-**Alternative considered: Monocypher (Blake2b)**
-
-Monocypher is a 2-file, public-domain, formally audited library (used in WireGuard) that provides Blake2b for hashing. It is faster than SHA-256 on the same hardware. It was not chosen here because:
-- Blake2b changes the hash format (not SHA-256 compatible)
-- SHA-256 is already established in the codebase and test suite
-- The self-contained implementation is equally small and auditable
-
-Monocypher remains a valid future choice if the hash format is renegotiated.
-
-### sha256.h / sha256.c Design
-
-```c
-void sha256_init  (sha256_ctx *ctx);
-void sha256_update(sha256_ctx *ctx, const void *data, size_t len);
-void sha256_final (sha256_ctx *ctx, uint8_t digest[SHA256_DIGEST_LEN]);
-void sha256_digest(const void *data, size_t len, uint8_t out[SHA256_DIGEST_LEN]);
-```
-
-- `sha256_ctx` holds: `state[8]`, `bit_count` (64-bit), `buf[64]`, `buflen`
-- `sha256_final` **wipes** the context after producing the digest (no state leakage)
-- Padding follows FIPS 180-4 § 5.1.1 exactly; handles both 1-block and 2-block padding paths
-- `sha256_digest` is the one-shot helper for the common case
-
-### Fixes Applied to crypto.c
-
-1. **Hash length**: `to_hex(digest, 32, (char *)block->hash)` writes all 64 hex chars + null. `HASH_SIZE = 65` is now fully utilised.
-2. **`consensus` in hash**: Added `sha256_update(&ctx, &block->consensus, sizeof(block->consensus))`.
-3. **`compute_merkle_root`**: Feeds `sender + recipient + amount` for each transaction using incremental `sha256_update`. No intermediate buffer — avoids the previous overflow risk.
-4. **NULL check**: Moved before `log_info` in `hash()`.
-5. **`sign()`/`verify()` stubs**: Implemented as `return EXIT_FAILURE` with clear ADR-003 reference.
-
-### For Signing (Future Work)
-
-`sign()` and `verify()` remain stubs. They will be wired to **liboqs Dilithium** as planned in ADR-003. The function signatures are already in `crypto.h` and compatible with a Dilithium integration.
-
-### Test Coverage (`tests/test_crypto.c`) — 20 tests across 5 groups
-
-| Group | Tests |
-|---|---|
-| `sha256/nist` | FIPS 180-4 known answer: SHA-256("") |
-| `sha256/vs_openssl` | Cross-validation vs OpenSSL reference: 1 byte, 5 bytes, 55, 56, 64, 200, 256 bytes |
-| `sha256/incremental` | Byte-by-byte update matches one-shot; deterministic; different inputs differ; output length |
-| `block_hash` | Full 64-char output (regression for truncation bug); nonce change changes hash; consensus change changes hash; NULL block |
-| `merkle` | Empty transactions → "0"; NULL args safe; transactions produce full 64-char root; different amounts produce different roots |
-
-The `vs_openssl` group uses OpenSSL as a reference oracle (suppressing deprecation warnings with pragma guards). The 55-byte and 56-byte tests specifically exercise the two padding paths in `sha256_final`.
-
----
-
-## ADR-009: Transaction Module — Dilithium-Correct Sizes, Integer Amounts, Replay Protection
-
-**Date:** 2026-03
-**Status:** Adopted
-**Files:** `inc/transaction.h`, `src/transaction.c`, `src/chain.c`, `src/crypto.c`, `src/main.c`, `tests/test_crypto.c`
-
-### Context — Issues Found in Original transaction.h / transaction.c
-
-A review of the transaction module found the following bugs and deficiencies:
+#### Context — Bugs in Original transaction.h
 
 | Issue | Severity | Detail |
 |---|---|---|
-| `MAX_SIGNATURE_LENGTH 512` too small | Critical | Dilithium-3 signatures are 3293 bytes. Storing one would silently overflow the field. |
-| `MAX_PUBLIC_KEY_LENGTH 1024` too small | Critical | Dilithium-3 public keys are 1952 bytes. Same overflow risk. |
-| `double amount` for financial values | High | Floating-point arithmetic is non-deterministic across platforms. Two nodes could hash the same transaction to different values. |
-| No replay protection | High | A signed transaction could be rebroadcast indefinitely — there was no per-sender sequence number. |
-| `sign_transaction` returned `void` | High | OQS failures were silently swallowed. Callers had no way to detect a signing failure. |
-| `verify_transaction` return inverted | High | Returned `1` on success and `0` on failure — opposite of `EXIT_SUCCESS`/`EXIT_FAILURE` convention used everywhere else. |
-| VLA for a compile-time-constant size | Medium | `uint8_t message[sizeof(sender)+...]` produced a VLA despite all operands being constants. Illegal in C99 `_Static_assert` context and non-portable. |
-| `printf` instead of `log_error` | Low | Error messages bypassed the logging framework and always went to stdout. |
-| No compile-time size guard | Low | Mismatches between `MAX_SIGNATURE_LENGTH` and the actual OQS constant would only be caught at runtime (memory corruption). |
+| `MAX_SIGNATURE_LENGTH 512` too small | Critical | Dilithium-3 signatures are 3293 bytes — silent buffer overflow |
+| `MAX_PUBLIC_KEY_LENGTH 1024` too small | Critical | Dilithium-3 public keys are 1952 bytes — same overflow risk |
+| `double amount` | High | Floating-point is non-deterministic; two nodes could hash the same transaction to different values |
+| No replay protection | High | Signed transaction could be rebroadcast indefinitely |
+| `sign_transaction` returned `void` | High | OQS failures silently swallowed |
+| `verify_transaction` return inverted | High | Returned `1` on success, `0` on failure — opposite of convention |
 
-### Decision — Updated Constants and Type
+#### Decision — Updated Constants
 
 ```c
 #define MAX_PUBLIC_KEY_LENGTH  1952          /* Dilithium-3 public key  */
@@ -705,11 +899,15 @@ A review of the transaction module found the following bugs and deficiencies:
 #define TX_MESSAGE_LEN  (MAX_PUBLIC_KEY_LENGTH * 2 + sizeof(uint64_t) * 2)
 ```
 
-`amount` is stored as a `uint64_t` in **micro-units** (one millionth of a token). This is the same convention used by Bitcoin (satoshis) and the Lightning Network. It makes all hashing and comparison operations on amounts bitwise-identical across platforms.
+`amount` is stored as `uint64_t` in **micro-units** (1 token = 1,000,000 µ).
+This is the same convention used by Bitcoin (satoshis) — all hashing and
+comparison operations are bitwise-identical across platforms.
 
-A `uint64_t nonce` field is added for **replay protection**. The nonce is a per-sender sequence number that must increase monotonically. A transaction with a reused nonce is invalid. The nonce is included in the signed message and in the Merkle root so it cannot be stripped by an intermediary.
+A `uint64_t nonce` field adds **replay protection** — a per-sender sequence
+number that must increase monotonically. Included in the signed message and
+in the Merkle root so it cannot be stripped by an intermediary.
 
-### Decision — Updated Transaction Struct
+#### Decision — Transaction Struct
 
 ```c
 typedef struct {
@@ -722,23 +920,20 @@ typedef struct {
 } Transaction;
 ```
 
-### Decision — sign_transaction Returns int
+#### Decision — build_message Helper
 
-`sign_transaction` now returns `int` (`EXIT_SUCCESS` / `EXIT_FAILURE`). This aligns with every other function in the codebase that can fail. Callers can propagate or log the error.
-
-`verify_transaction` return convention is corrected: `EXIT_SUCCESS` on valid signature, `EXIT_FAILURE` otherwise.
-
-### Decision — build_message Helper
-
-A static `build_message()` helper constructs the canonical message for sign/verify:
+A static `build_message()` constructs the canonical signed message using
+**fixed-width fields** (not `strlen`):
 
 ```
 sender[MAX_PUBLIC_KEY_LENGTH] | recipient[MAX_PUBLIC_KEY_LENGTH] | amount(8B) | nonce(8B)
 ```
 
-Using **fixed-width fields** (not `strlen`) guarantees that the message length is constant regardless of label content. Both `sign_transaction` and `verify_transaction` call `build_message` — they always hash the same bytes for the same struct state.
+Both `sign_transaction` and `verify_transaction` call `build_message` — they
+always hash the same bytes for the same struct state, regardless of field
+content.
 
-### Decision — _Static_assert Guard
+#### Decision — Compile-Time Size Guard
 
 ```c
 #if defined(OQS_SIG_dilithium_3_length_signature)
@@ -747,65 +942,42 @@ _Static_assert(MAX_SIGNATURE_LENGTH >= OQS_SIG_dilithium_3_length_signature,
 #endif
 ```
 
-This catches a size mismatch at compile time rather than at runtime (memory corruption). The guard is conditional so the file compiles when `liboqs` is absent.
+Catches size mismatches at compile time, not at runtime memory corruption.
 
-### Decision — Nonce in Merkle Root
-
-`compute_merkle_root` (in `crypto.c`) feeds `tx->nonce` into the SHA-256 hash for each transaction. Without this, a valid transaction could have its nonce stripped and remain undetected.
-
-### On-Disk Format Break
-
-These changes increase `sizeof(Transaction)` and therefore `sizeof(Block)`. Any `.chain/` directory created before this change holds binary files in the old format and is incompatible. Existing `.chain/` directories must be deleted and re-initialised.
-
-This is an intentional, one-time break. The Makefile requires `make clean` before `make test` any time a header that affects `sizeof(Block)` changes, because the Makefile does not yet generate automatic header dependency rules (there is no `-MMD -MP` flag). Tracking this as a known limitation: any change to `transaction.h` or `block.h` requires `make clean` to avoid stale objects.
-
-### Rationale
+#### Rationale
 
 | Decision | Reason |
 |---|---|
-| `uint64_t amount` (micro-units) | Platform-independent bitwise representation; standard convention (Bitcoin, Lightning) |
+| `uint64_t amount` (micro-units) | Platform-independent; standard Bitcoin/Lightning convention |
 | `uint64_t nonce` | Necessary for replay protection before Dilithium signing is wired in |
-| Fixed-width `build_message` | Sign and verify always agree on the message bytes regardless of field content |
-| `_Static_assert` | Catches size regressions at compile time, not at runtime |
-| `int` return from `sign_transaction` | Consistent with every other fallible function in the codebase |
-| `log_error` instead of `printf` | All error output should go through the logging framework for stream control |
+| Fixed-width `build_message` | Sign and verify always agree on message bytes |
+| `_Static_assert` | Catches size regressions at compile time |
+| `int` return from `sign_transaction` | Consistent with every other fallible function |
 
-### Files Changed
-
-| File | Change |
-|---|---|
-| `inc/transaction.h` | New constants, `uint64_t amount/nonce`, `TX_MESSAGE_LEN`, `int sign_transaction` |
-| `src/transaction.c` | `build_message()`, fixed-size buffer, corrected returns, `log_error`, `_Static_assert` |
-| `src/chain.c` | `amount == 0` guard (was `<= 0.0` on a double) |
-| `src/crypto.c` | Added `sha256_update(&ctx, &tx->nonce, sizeof(tx->nonce))` in `compute_merkle_root` |
-| `src/main.c` | `atof` → `uint64_t` micro-unit conversion; STAGED format uses integer amounts; display with `MICRO_PER_TOKEN` divisor |
-| `tests/test_crypto.c` | Test amounts converted to ULL micro-units (e.g. `42.0` → `42000000ULL`) |
+**Note on disk format:** These changes increase `sizeof(Transaction)` and
+`sizeof(Block)`. Any `.chain/` created before this change holds binary files
+in the old format. Old directories must be deleted and re-initialized.
 
 ---
 
-## ADR-010: Consensus Module Redesign — Dispatch Table, PoW Enforcement, PoS Stubs
+### ADR-010: Consensus Module — Dispatch Table, PoW, PoS
 
-**Date:** 2026-03
-**Status:** Adopted
-**Files:** `inc/consensus.h`, `src/consensus.c`, `src/chain.c`, `src/main.c`, `tests/test_chain.c`, `tests/test_consensus.c`
+**Date:** 2026-03 · **Status:** Adopted · **Files:** `inc/consensus.h`, `src/consensus.c`
 
-### Context — Issues Found in Original consensus.h / consensus.c
-
-A review of the consensus module found the following bugs and architectural deficiencies:
+#### Context — Bugs in Original consensus.c
 
 | Issue | Severity | Detail |
 |---|---|---|
-| `verify_consensus()` never called | Critical | No code anywhere included `consensus.h` or called `verify_consensus()`. Chain accepted any block regardless of PoW difficulty or PoS validity — consensus was completely bypassed. |
-| Wrong dispatch logic | Critical | `block->consensus % SWITCH_INTERVAL` evaluated `0 % 10 = 0` (PoS) and `1 % 10 = 1` (PoW) — the opposite of the intended routing. |
-| Always returns 0 (success) | Critical | `verify_consensus()` returned 0 unconditionally after printing a string. All validation was commented out. |
-| `verify_signature()` declared but undefined | High | Would cause a linker error if called. Interface Segregation violated — an incomplete function was exported. |
-| `SWITCH_INTERVAL` conflicts with ADR-006 | High | Automatic block-index-based consensus switching conflicts with `Block.consensus` being an explicit proposer-set field (ADR-006). The field stores the consensus type directly; SWITCH_INTERVAL is meaningless. |
-| `puts()` instead of `log_error()` | Low | Bypassed the log framework; messages always went to stdout. |
-| Unused types (`ProofOf`, `ConsensusType`) | Low | Never referenced outside `consensus.h`. Added noise. |
+| `verify_consensus()` never called | Critical | Chain accepted any block regardless of PoW difficulty — consensus completely bypassed |
+| Wrong dispatch logic | Critical | `block->consensus % SWITCH_INTERVAL` routed PoW and PoS backwards |
+| Always returns 0 | Critical | Validation was commented out; all blocks accepted unconditionally |
+| `verify_signature()` declared but undefined | High | Linker error if called |
+| `SWITCH_INTERVAL` conflicts with `Block.consensus` field | High | Automatic switching by block index conflicts with the explicit proposer-set field |
 
-### Decision — Dispatch Table
+#### Decision — Dispatch Table
 
-Replace the conditional with a function-pointer array indexed by `block->consensus`:
+Replace the conditional with a function-pointer array indexed by
+`block->consensus`:
 
 ```c
 typedef int (*consensus_fn)(const Block *);
@@ -814,603 +986,503 @@ static const consensus_fn VERIFY[] = {
     [CONSENSUS_POW] = verify_pow_rules,
     [CONSENSUS_POS] = verify_pos_rules,
 };
+
+int verify_consensus(const Block *block) {
+    if (!block || block->consensus >= NELEM(VERIFY) || !VERIFY[block->consensus])
+        return EXIT_FAILURE;
+    return VERIFY[block->consensus](block);
+}
 ```
 
-Adding a new consensus type requires only a new entry in the array and a new `verify_*_rules` function — no changes to `verify_consensus()` itself (Open/Closed Principle).
+Adding a new consensus type requires only a new array entry and a new
+`verify_*_rules` function — no changes to `verify_consensus()` itself.
 
-### Decision — Constants
+#### Decision — Constants
 
 ```c
 #define CONSENSUS_POW 0   /* Proof of Work  */
 #define CONSENSUS_POS 1   /* Proof of Stake */
 ```
 
-These replace `SWITCH_INTERVAL`, `ProofOf`, and `ConsensusType`, which are all removed. The constants are self-documenting and match the values stored in `Block.consensus` (from ADR-006).
+Replaces `SWITCH_INTERVAL`, `ProofOf`, and `ConsensusType` (all removed).
 
-### Decision — PoW Rules
+#### Decision — PoW Rules
 
-`verify_pow_rules()` delegates entirely to `validate_block_pow(block, DIFFICULTY)`, which performs both the leading-zero difficulty check and `block_verify_hash()` internally. The DIFFICULTY constant (default 4) is defined in `pow.h`.
+`verify_pow_rules()` delegates to `validate_block_pow(block, DIFFICULTY)`,
+which checks both the leading-zero difficulty target and `block_verify_hash()`.
 
-### Decision — PoS Rules (with Security Stubs)
+#### Decision — PoS Rules (with Security Stubs)
 
-`verify_pos_rules()` currently enforces:
-1. **Hash integrity** — `block_verify_hash()` — required for all blocks.
-
-Three security checks are required for production PoS but deferred to ADR-003 (validator key registry + VRF leader selection). Each is marked with a TODO:
+`verify_pos_rules()` currently enforces hash integrity only:
 
 ```c
 /* TODO (ADR-003): verify VRF proof — proposer must hold the slot token. */
-/* TODO (ADR-003): verify Dilithium-3 block signature (verify_block_signature). */
+/* TODO (ADR-003): verify Dilithium-3 block signature. */
 /* TODO (ADR-002): verify proposer has sufficient registered stake. */
 ```
 
-The stubs are present and accounted for; they are not silent omissions.
+These stubs are present and accounted for — not silent omissions.
 
-### Decision — `verify_block_signature` Stub
-
-`verify_signature(const Block *)` (undeclared implementation) is replaced by `verify_block_signature(const Block *)`, which is implemented as a stub returning `EXIT_FAILURE`. This:
-- Eliminates the undefined-symbol linker error.
-- Prevents unsigned blocks from passing validation by accident.
-- Documents the missing feature with an ADR-003 reference.
-
-### Decision — Wire into `chain_validate`
+#### Decision — Wire into chain_validate
 
 ```c
-/* Before (manual check only): */
-if (block->consensus != 0 && block->consensus != 1) {
-    log_error("chain_validate: unknown consensus type ...");
-    return EXIT_FAILURE;
-}
-
-/* After (full consensus enforcement): */
+/* After: full consensus enforcement */
 if (verify_consensus(block) != EXIT_SUCCESS) {
-    log_error("chain_validate: consensus check failed ...");
+    log_error("chain_validate: consensus check failed for block %u", block->index);
     return EXIT_FAILURE;
 }
 ```
 
-`chain_validate()` now enforces PoW difficulty and PoS hash integrity for every block added to the chain. The consensus bypass is closed.
+`chain_validate()` now enforces PoW difficulty and PoS hash integrity for every
+`chain_add()`. The consensus bypass is closed.
 
-### Decision — `cmd_commit` Now Mines PoW Blocks
-
-`cmd_commit` in `main.c` previously called `block_compute_hash(b)`, which produces a valid hash but with no leading zeros. After wiring `verify_consensus` into `chain_validate`, such a block would fail the PoW check when `chain_add()` was called.
-
-Fix: set `b->consensus = CONSENSUS_POW` explicitly and replace `block_compute_hash` with `mine_block(b, DIFFICULTY)`:
-
-```c
-b->consensus = CONSENSUS_POW;
-if (mine_block(b, DIFFICULTY) != EXIT_SUCCESS) {
-    fprintf(stderr, "error: failed to mine block (nonce exhausted)\n");
-    ...
-}
-```
-
-This makes the CLI correct by construction: committed blocks are real PoW blocks.
-
-### Decision — `test_chain.c` Uses `CONSENSUS_POS` in `make_next`
-
-`make_next()` (the test helper that builds well-formed blocks for chain tests) now sets `b->consensus = CONSENSUS_POS`. PoS only requires hash integrity — no mining — so chain tests remain fast. Tests that specifically exercise PoW consensus live in `test_consensus.c`.
-
-This separates concerns: `test_chain.c` tests chain mechanics (link rules, pool, storage); `test_consensus.c` tests consensus rules (difficulty, hash integrity, dispatch).
-
-### Security Improvements
+#### Security Before vs After
 
 | Before | After |
 |---|---|
-| Consensus bypass: any block accepted | `verify_consensus()` enforced in `chain_validate()` for every `chain_add()` |
-| PoW difficulty never checked at chain layer | PoW blocks must satisfy `DIFFICULTY` leading zeros before admission |
-| `verify_signature()` undefined symbol | `verify_block_signature()` stub returns EXIT_FAILURE — unsigned blocks rejected |
-| SWITCH_INTERVAL created implicit PoW↔PoS confusion | Explicit `block->consensus` field, validated against known types |
-| Unknown consensus types silently accepted | Bounds check rejects unknown types (EXIT_FAILURE) |
+| Consensus bypass: any block accepted | `verify_consensus()` enforced in `chain_validate()` |
+| PoW difficulty never checked | PoW blocks must satisfy `DIFFICULTY` leading zeros |
+| `verify_signature()` undefined symbol | `verify_block_signature()` stub returns EXIT_FAILURE |
+| Unknown types silently accepted | Bounds check rejects unknown types |
 
-### Pending Security Work (ADR-003)
+#### Pending Security Work (ADR-003)
 
-1. **VRF leader election**: The slot token proof must be verified to prevent any validator from proposing PoS blocks out of turn.
-2. **Dilithium-3 block signatures**: `verify_block_signature()` must be wired to the key registry once validator public keys are stored.
-3. **Stake threshold**: A minimum stake must be required before a validator can propose — prevents Sybil attacks.
-4. **Equivocation guard**: A validator should not be permitted to propose two different blocks for the same slot.
+1. VRF leader election — slot token proof verification
+2. Dilithium-3 block signatures — wire `verify_block_signature()` to key registry
+3. Stake threshold — minimum stake before a validator can propose
+4. Equivocation guard — prevent proposing two blocks for the same slot
 
-### Test Coverage (`tests/test_consensus.c`) — 8 tests across 2 groups
+#### Test Coverage
+
+8 tests in `test_consensus.c`:
 
 | Group | Tests |
 |---|---|
-| `consensus/verify_consensus` | NULL block, PoW mined block passes, PoW unmined block fails, PoW tampered nonce fails, PoS valid hash passes, PoS tampered hash fails, unknown type=2 fails |
+| `consensus/verify_consensus` | NULL block, PoW mined pass, PoW unmined fail, PoW tampered nonce fail, PoS valid hash pass, PoS tampered hash fail, unknown type=2 fail |
 | `consensus/verify_block_signature` | stub always returns EXIT_FAILURE |
-
-### Files Changed
-
-| File | Change |
-|---|---|
-| `inc/consensus.h` | Removed SWITCH_INTERVAL / ProofOf / ConsensusType; added CONSENSUS_POW / CONSENSUS_POS; replaced `verify_signature` with `verify_block_signature` |
-| `src/consensus.c` | Full rewrite: dispatch table, verify_pow_rules, verify_pos_rules (with TODO stubs), verify_block_signature stub, log_error/log_warn throughout |
-| `src/chain.c` | Added `#include "consensus.h"`; replaced manual consensus field check with `verify_consensus()` call |
-| `src/main.c` | Added `#include "consensus.h"` and `pow.h`; `cmd_commit` now sets `CONSENSUS_POW` and calls `mine_block(b, DIFFICULTY)` |
-| `tests/test_chain.c` | Added `#include "consensus.h"`; `make_next()` sets `b->consensus = CONSENSUS_POS` |
-| `tests/test_consensus.c` | New: 8 tests for verify_consensus and verify_block_signature |
 
 ---
 
-## ADR-011: Log Module Rewrite — Heisenbug-Safe, Level-Gated, Secure
+### ADR-011: Log Module — Heisenbug-Safe, Level-Gated, Secure
 
-**Date:** 2026-03
-**Status:** Adopted
-**Files:** `inc/log.h`, `src/log.c`, `tests/test_log.c`
+**Date:** 2026-03 · **Status:** Adopted · **Files:** `inc/log.h`, `src/log.c`
 
-### Context — Problems Found in Original log.h / log.c
+#### Context — Problems in Original log.h
 
-A review of the logging module against the goals of zero latency impact and no heisenbugs found the following defects:
+| Issue | Impact |
+|---|---|
+| `malloc` on every log call | Changes heap layout across every call — any heap-dependent bug appears or disappears based on log verbosity (heisenbug) |
+| Mutex held during `fflush` (synchronous kernel call) | All threads blocked; serialises the mining loop |
+| `fflush` after every write including INFO | Measurable latency on every block hash and storage insert |
+| `ENABLED` macro computed but never used | No runtime level filtering occurred |
+| `DEBUG` guard broken | `log_debug` emitted output in release builds |
+| Source paths in release builds | Internal code structure exposed in production logs |
+| `##__VA_ARGS__` GNU extension | Compiler warning at every call site |
 
-| Issue | Impact | Detail |
+#### Decision — Stack-Only Formatting, Minimal Critical Section
+
+All formatting happens on the calling thread's stack before the mutex is
+acquired:
+
+```
+① level gate     — one comparison, no lock, no allocation
+② format ts      — stack, no lock
+③ format source  — stack, no lock
+④ vsnprintf msg  — stack, no lock
+⑤ assemble line  — stack, no lock
+⑥ mutex_lock
+⑦ fprintf        — I/O, lock held
+⑧ fflush         — ERROR/WARN only, lock held
+⑨ mutex_unlock
+```
+
+No `malloc` anywhere in the call path. The heap layout is identical whether
+logging is active or suppressed — log-dependent heisenbugs are eliminated by
+construction.
+
+#### Decision — fflush Policy
+
+| Level | Flushed? | Reason |
 |---|---|---|
-| `malloc` on every log call | Heisenbug risk, crash risk | Heap allocation changes memory layout across every log call, altering pointer values and padding. Any bug that only manifests when the heap is laid out a certain way will appear or disappear depending on log verbosity. A `malloc` failure also silently dropped the message with no NULL check. |
-| Mutex held for entire I/O including `fflush` | Latency, thread scheduling change | All other threads were blocked while a single log call formatted text, wrote to disk, and flushed. `fflush` is a synchronous kernel call; holding the mutex during it serialises the mining loop. |
-| `fflush` after every write | Latency | Forced a kernel write barrier after every INFO and DEBUG message. INFO is emitted frequently (every block hash, every storage insert); flushing every one adds measurable latency to the chain operations path. |
-| `ENABLED` macro computed but never used | Correctness | The expression `(level <= LOG_LEVEL_INFO)` was evaluated and discarded. No runtime level filtering occurred. |
-| `DEBUG` guard broken | Correctness | All four macros (`log_error`, `log_warn`, `log_info`, `log_debug`) always expanded to a `log_write()` call regardless of whether `-DDEBUG` was set. `log_debug` emitted output in release builds. |
-| Source paths / function names in release | Security | Production logs must not expose internal code structure (file paths, function names, line numbers) to operators, log aggregators, or anyone with access to the log stream. |
-| `(fmt, ...) + ##__VA_ARGS__` GNU extension | Portability | The `##__VA_ARGS__` token-pasting extension (removes preceding comma when variadic list is empty) triggered `-Wvariadic-macro-arguments-omitted` at every call site that passed only a format string. The pragma guards in `log.h` covered the definition but not the expansion sites. |
+| ERROR, WARN | Yes | Critical failures must reach the operator even if the process crashes shortly after |
+| INFO, DEBUG | No | INFO is emitted on every block hash and storage insert; synchronous flush would serialise the chain operations path |
 
-### Decision — Stack-Only Formatting, Minimal Critical Section
-
-All formatting (timestamp, source location, user message, assembled line) happens on the calling thread's stack before the mutex is acquired. The mutex is held only for `fprintf` and the conditional `fflush`:
-
-```
-caller thread:
-  ① level gate (one comparison, no lock, no allocation)
-  ② format timestamp              — stack, no lock
-  ③ format source location        — stack, no lock
-  ④ vsnprintf user message        — stack, no lock
-  ⑤ assemble full line            — stack, no lock
-  ⑥ pthread_mutex_lock
-  ⑦ fprintf(log_stream, ...)      — I/O, lock held
-  ⑧ fflush (ERROR/WARN only)      — conditional, lock held
-  ⑨ pthread_mutex_unlock
-```
-
-No `malloc` or `free` anywhere in the call path. All buffers are fixed-size stack variables. The heap layout is identical whether logging is active or suppressed — heisenbugs caused by log-dependent memory layout are eliminated by construction.
-
-### Decision — Level Gate
-
-The first operation in `log_write` is a single comparison against `log_level` with no lock:
-
-```c
-if (level > log_level) return;
-```
-
-Filtered messages cost one integer comparison on the calling thread and nothing else. No stack allocation, no mutex touch, no formatting work.
-
-### Decision — fflush Policy
-
-`fflush` is called only when `level <= LOG_LEVEL_WARN`:
-
-- **ERROR, WARN** — flushed immediately. Critical failures and anomalies must reach the operator even if the process crashes shortly after.
-- **INFO, DEBUG** — left in the OS write buffer. INFO is emitted on every block hash and storage insert; synchronous flushing after every INFO would serialise the mining loop and chain operations.
-
-### Decision — Runtime Level Control
-
-```c
-void log_set_level(int level);
-```
-
-Sets the minimum severity threshold at runtime. **ERROR and WARN cannot be suppressed**: `log_set_level` clamps the minimum to `LOG_LEVEL_WARN`. Operators running high-throughput nodes can silence INFO to reduce I/O without losing consensus failure visibility.
+#### Decision — Level Table
 
 | Constant | Value | Compiled | Suppressible |
 |---|---|---|---|
-| `LOG_LEVEL_ERROR` | 0 | Always | No (always visible) |
+| `LOG_LEVEL_ERROR` | 0 | Always | No |
 | `LOG_LEVEL_WARN` | 1 | Always | No (minimum clamp) |
-| `LOG_LEVEL_INFO` | 2 | Always | Yes (via `log_set_level`) |
-| `LOG_LEVEL_DEBUG` | 3 | Debug only | N/A — `((void)0)` in release |
+| `LOG_LEVEL_INFO` | 2 | Always | Yes |
+| `LOG_LEVEL_DEBUG` | 3 | Debug only (`-DDEBUG`) | N/A — `((void)0)` in release |
 
-### Decision — Compile-Time DEBUG Guard
+`log_set_level` clamps the minimum to `LOG_LEVEL_WARN`. ERROR and WARN cannot
+be suppressed — operators can silence INFO for throughput without losing
+consensus failure visibility.
 
-In release builds, `log_debug(...)` expands to `((void)0)`. The compiler emits zero instructions: no stack frame, no register spill, no heap touch, no thread scheduling impact. This is the correct fix for debug-induced heisenbugs — the binary is identical to one that never had `log_debug` calls.
+#### Decision — Release Builds Omit Source Location
 
-```c
-#if defined(DEBUG)
-#define log_debug(...) \
-    log_write(LOG_LEVEL_DEBUG, "DEBUG", __FILE__, __func__, __LINE__, __VA_ARGS__)
-#else
-#define log_debug(...) ((void)0)
-#endif
-```
+In release builds `__FILE__`, `__func__`, `__LINE__` are replaced with
+`NULL, NULL, 0`. Log lines contain only timestamp, level, and message.
+Internal source paths and function names are never written to log streams
+that may be forwarded to external systems.
 
-### Decision — Release Builds Omit Source Location
+#### Security Policy
 
-In release builds, `__FILE__`, `__func__`, and `__LINE__` are replaced with `NULL, NULL, 0`:
+**Never** pass private keys, VRF secrets, seed material, Dilithium secret
+keys, or session tokens to any log macro. Log output may be written to shared
+storage or forwarded to external systems — treat all log content as public.
 
-```c
-/* Release */
-#define log_error(...) \
-    log_write(LOG_LEVEL_ERROR, "ERROR", NULL, NULL, 0, __VA_ARGS__)
-```
+#### Remote Monitoring
 
-`log_write` checks `if (file && func)` before formatting the source location field. Release log lines contain only the timestamp, level, and message. Internal source paths and function names are never written to log streams that may be forwarded to external systems.
-
-### Decision — `(...)` / `__VA_ARGS__` Pattern
-
-All log macros use `(...)` instead of `(fmt, ...)` and `__VA_ARGS__` instead of `##__VA_ARGS__`. With `(...)`, the format string itself is the first element of the variadic pack — `__VA_ARGS__` is never empty. This eliminates the GNU extension entirely, removing the pragma guards from `log.h` and the `-Wvariadic-macro-arguments-omitted` warning from all call sites.
-
-### Decision — Remote Monitoring via Named Pipe
-
-`log_set_stream(FILE *stream)` accepts any `FILE*`, including one opened on a FIFO:
+`log_set_stream(FILE *)` accepts any `FILE*`, including one opened on a FIFO:
 
 ```c
 log_set_stream(fopen("/tmp/blocky.log", "w"));
-// shell: cat /tmp/blocky.log | ssh user@monitor ...
+/* shell: tail -f /tmp/blocky.log | ssh user@monitor */
 ```
 
-A dedicated **TCP/UDP logging port is not recommended**. It exposes real-time mining state (nonce trajectory, block solve timing, hash rate) to unauthenticated network observers, enabling timing attacks and selfish-mining intelligence gathering. Named pipe or log file forwarded over an authenticated channel (SSH, TLS) is the correct approach.
-
-### Security Policy
-
-`NEVER` pass private keys, VRF secrets, seed material, Dilithium secret keys, or session tokens to any log macro. Log output may be written to shared storage or forwarded to external systems — treat all log content as public. Source paths and function names are omitted in release builds to avoid leaking internal code structure.
-
-### Test Coverage (`tests/test_log.c`) — 8 tests across 3 groups
-
-| Group | Test | Verifies |
-|---|---|---|
-| `log/stream` | `test_log_to_terminal` | `log_set_stream(stdout)` routes output; "INFO" appears in pipe-captured output |
-| `log/stream` | `test_log_to_file` | `log_set_stream(file)` writes "INFO" and the message text |
-| `log/level` | `test_info_suppressed_below_threshold` | INFO produces zero bytes when threshold is WARN |
-| `log/level` | `test_error_never_suppressed` | ERROR appears even when threshold is WARN |
-| `log/level` | `test_warn_visible_at_warn_threshold` | WARN appears when threshold is WARN |
-| `log/level` | `test_level_clamped_at_warn_minimum` | `log_set_level(ERROR)` is clamped to WARN; WARN still appears |
-| `log/format` | `test_debug_build_includes_source_location` | Debug build includes filename and function name in output |
-| `log/format` | `test_timestamp_present` | Timestamp prefix `[20...` appears on every log line |
-
-### Files Changed
-
-| File | Change |
-|---|---|
-| `inc/log.h` | Full rewrite: level constants, `log_set_level`, fixed DEBUG guard, `(...)/__VA_ARGS__` pattern, security documentation |
-| `src/log.c` | Full rewrite: stack-only buffers, level gate, format outside mutex, fflush on ERROR/WARN only, `log_set_stream` mutex-protected |
-| `tests/test_log.c` | Updated: setup/teardown per test, 4 new level tests, 2 format tests |
+A dedicated TCP/UDP logging port is **not recommended** — it exposes mining
+state (nonce trajectory, hash rate) to unauthenticated network observers,
+enabling timing attacks and selfish-mining intelligence gathering.
 
 ---
 
-## ADR-012: Integration Tests — Payment and Miner Use Cases
+### ADR-012: Integration Tests — Payment and Miner Use Cases
 
-**Date:** 2026-03
-**Status:** Adopted
-**Files:** `tests/test_integration_payment.c`, `tests/test_integration_miner.c`
+**Date:** 2026-03 · **Status:** Adopted · **Files:** `tests/test_integration_payment.c`, `tests/test_integration_miner.c`
 
-### Context
+#### Context
 
-Unit tests cover individual modules in isolation (`test_block.c`, `test_chain.c`, etc.). Integration tests are needed to verify that the modules compose correctly under realistic end-to-end scenarios matching real user workflows. Two primary use cases were identified:
+Unit tests cover modules in isolation. Integration tests verify that modules
+compose correctly under realistic end-to-end scenarios.
 
-1. **Payment user** — sends tokens from one address to another, commits to the chain, and can verify the on-chain record.
-2. **Miner** — mines blocks with PoW, grows the chain, and the chain correctly rejects invalid blocks.
+Two primary use cases:
+1. **Payment user** — sends tokens, commits to chain, verifies on-chain record
+2. **Miner** — grows the chain with PoW blocks; chain rejects invalid blocks
 
-### Decision — Test Against the Library API Directly
+#### Decision — Test Against the Library API Directly
 
-Integration tests call the C library API (`chain.h`, `block.h`, `storage.h`, `pow.h`, `consensus.h`) directly, not through the CLI binary. This:
-- Exercises the same code path as `cmd_send` + `cmd_commit` without depending on CLI parsing.
-- Makes failures deterministic — no subprocess, no shell, no environment dependency.
-- Runs at the same speed as unit tests.
+Integration tests call the C library API directly, not through the CLI binary:
+- Exercises the same code path as `cmd_send` + `cmd_commit`
+- Failures are deterministic — no subprocess, no shell, no environment dependency
+- Runs at the same speed as unit tests
 
-### Decision — Mine at `DIFFICULTY=4` in Integration Tests
+#### Decision — Mine at DIFFICULTY=4
 
-Each test that produces a valid PoW block calls `mine_block(b, DIFFICULTY)` (DIFFICULTY=4, defined in `pow.h`). At 4 leading hex zeros, average hash count is ~65,000 per block. Three consecutive mines complete in well under one second on any modern CPU.
+Each test that needs a valid PoW block calls `mine_block(b, DIFFICULTY)`
+(DIFFICULTY=4). At 4 leading hex zeros, average hash count is ~65,000.
+Three consecutive mines complete in under one second on any modern CPU.
 
-### Decision — Tamper Detection Scope
+#### Tamper Detection Scope
 
-`block_verify_hash()` (called by `verify_consensus` for all block types) recomputes the hash over the block **header fields**: `index`, `timestamp`, `previous_hash`, `merkle_root`, `nonce`, `consensus`. It does **not** re-verify raw transaction bytes against the Merkle root.
+`block_verify_hash()` recomputes the hash over header fields: `index`,
+`timestamp`, `previous_hash`, `merkle_root`, `nonce`, `consensus`. It does
+**not** re-verify transaction bytes against the Merkle root.
 
-Consequences:
-- Tampering any **header field** (including `merkle_root`) after mining is detected.
-- Tampering a **transaction field** (e.g., `amount`) after computing the Merkle root but before `chain_add` is also detected, because `compute_merkle_root` hashes all transaction fields into `merkle_root`, and the stored hash covers `merkle_root`.
-- Tampering a transaction field **after** `chain_add` (i.e., in the stored copy) is not caught by `block_verify_hash` — it would require re-running `compute_merkle_root` and comparing. This is a known limitation; full Merkle re-verification is future work.
+- Tampering any **header field** (including `merkle_root`) after mining: detected
+- Tampering a **transaction field** after `compute_merkle_root` but before
+  `chain_add`: detected (Merkle root covers all tx fields)
+- Tampering a transaction field **after** `chain_add` in the stored copy: not
+  detected by `block_verify_hash` alone — full Merkle re-verification is
+  pending future work
 
-The integration test `test_tampered_merkle_root_rejected` validates tamper detection by flipping a byte in `b->merkle_root` before `chain_add`, which correctly triggers rejection.
+#### Test Coverage
 
-### Test Coverage — Payment (`tests/test_integration_payment.c`) — 6 tests across 4 groups
-
-| Group | Test | Scenario |
-|---|---|---|
-| `payment/send` | `test_alice_sends_50_to_bob` | Full PoW payment flow; stored block has correct sender, recipient, amount |
-| `payment/send` | `test_chain_tip_advances_after_payment` | In-memory and on-disk HEAD both advance to the payment block |
-| `payment/batch` | `test_three_payments_in_one_block` | Three transactions in one block; all retrieved in order |
-| `payment/multi_block` | `test_two_payment_blocks_in_sequence` | Block 2 correctly links to Block 1; both independently readable |
-| `payment/invalid` | `test_zero_amount_transfer_rejected` | `amount=0` fails `chain_validate` before consensus check |
-| `payment/invalid` | `test_tampered_merkle_root_rejected` | Flipping `merkle_root[0]` after mining causes `chain_add` to return `EXIT_FAILURE` |
-
-### Test Coverage — Miner (`tests/test_integration_miner.c`) — 9 tests across 3 groups
+**Payment** (6 tests):
 
 | Group | Test | Scenario |
 |---|---|---|
-| `miner/proof_of_work` | `test_mine_block_returns_success` | `mine_block` returns `EXIT_SUCCESS`; hash has DIFFICULTY leading `'0'` chars; full 64-char hex string |
-| `miner/proof_of_work` | `test_mined_block_passes_pow_validation` | `validate_block_pow(b, DIFFICULTY)` returns `EXIT_SUCCESS` |
-| `miner/proof_of_work` | `test_mined_block_accepted_by_chain` | `chain_add` advances in-memory tip and on-disk HEAD |
-| `miner/proof_of_work` | `test_miner_includes_transactions` | Block with one transaction accepted; transaction retrievable from storage |
-| `miner/chain_growth` | `test_mine_three_consecutive_blocks` | Chain tip at index 3; all three blocks independently readable |
+| `payment/send` | `test_alice_sends_50_to_bob` | Full PoW payment; block has correct sender, recipient, amount |
+| `payment/send` | `test_chain_tip_advances_after_payment` | In-memory and on-disk HEAD both advance |
+| `payment/batch` | `test_three_payments_in_one_block` | Three transactions in one block |
+| `payment/multi_block` | `test_two_payment_blocks_in_sequence` | Block 2 links to Block 1; both independently readable |
+| `payment/invalid` | `test_zero_amount_transfer_rejected` | `amount=0` fails `chain_validate` |
+| `payment/invalid` | `test_tampered_merkle_root_rejected` | Flipping `merkle_root[0]` causes `chain_add` to return EXIT_FAILURE |
+
+**Miner** (9 tests):
+
+| Group | Test | Scenario |
+|---|---|---|
+| `miner/proof_of_work` | `test_mine_block_returns_success` | Hash has DIFFICULTY leading '0' chars; full 64-char hex |
+| `miner/proof_of_work` | `test_mined_block_passes_pow_validation` | `validate_block_pow(b, DIFFICULTY)` returns EXIT_SUCCESS |
+| `miner/proof_of_work` | `test_mined_block_accepted_by_chain` | `chain_add` advances tip and on-disk HEAD |
+| `miner/proof_of_work` | `test_miner_includes_transactions` | Block with one transaction accepted; retrievable from storage |
+| `miner/chain_growth` | `test_mine_three_consecutive_blocks` | Chain tip at index 3; all three readable |
 | `miner/chain_growth` | `test_chain_link_integrity` | `b1.previous_hash == genesis.hash`; `b2.previous_hash == b1.hash` |
-| `miner/security` | `test_unmined_pow_block_rejected` | `block_compute_hash` (no mining) produces no leading zeros; rejected by `chain_add` |
-| `miner/security` | `test_tampered_hash_after_mining_rejected` | Flipping `hash[8]` after mining triggers `block_verify_hash` mismatch |
-| `miner/security` | `test_wrong_previous_hash_rejected` | Mined block pointing to wrong previous hash fails the link check in `chain_validate` |
-
-### Files Added
-
-| File | Content |
-|---|---|
-| `tests/test_integration_payment.c` | 6 tests: payment send, batch, multi-block, invalid |
-| `tests/test_integration_miner.c` | 9 tests: PoW correctness, chain growth, security rejection |
+| `miner/security` | `test_unmined_pow_block_rejected` | `block_compute_hash` (no mining) → no leading zeros → rejected |
+| `miner/security` | `test_tampered_hash_after_mining_rejected` | Flipping `hash[8]` triggers `block_verify_hash` mismatch |
+| `miner/security` | `test_wrong_previous_hash_rejected` | Mined block with wrong previous hash fails link check |
 
 ---
 
-## ADR-013: Build System — Aggregated Test Summary and Coverage Target
+### ADR-013: Build System — Test Summary and Coverage
 
-**Date:** 2026-03
-**Status:** Adopted
-**Files:** `Makefile`
+**Date:** 2026-03 · **Status:** Adopted · **Files:** `Makefile`
 
-### Context
+#### Context
 
-`make test` ran every test binary and reported only a per-suite pass/fail exit code. There was no aggregated count of individual tests passed or failed across all suites, making it hard to gauge overall test health at a glance. There was also no coverage instrumentation in the build system.
+`make test` ran every suite but reported only per-suite exit codes. No
+aggregated individual-test count. No coverage instrumentation.
 
-### Decision — Aggregated Summary in `make test`
+#### Decision — Aggregated Summary
 
-After all test binaries have run, `make test` prints a table sourced from cmocka's group-summary lines (`[  PASSED  ] N test(s).` and `[  FAILED  ] N test(s).`):
+After all test binaries run, `make test` prints a table from cmocka's
+group-summary lines. Current baseline (213 tests):
 
 ```
   Suite                                    Passed  Failed   Total
   ──────────────────────────────────────────────────────────────
   test_block                                   12       0      12
-  test_chain                                   15       0      15
+  test_chain                                   18       0      18
   test_consensus                                8       0       8
   test_crypto                                  20       0      20
   test_integration_miner                        9       0       9
   test_integration_payment                      6       0       6
   test_log                                      8       0       8
-  test_main                                    24       0      24
-  test_pos                                     12       0      12
+  test_main                                    23       0      23
+  test_network                                 25       0      25
+  test_pos                                     13       0      13
   test_pow                                     13       0      13
+  test_sha256                                  16       0      16
   test_storage                                 26       0      26
   test_transaction                             15       0      15
   ──────────────────────────────────────────────────────────────
-  TOTAL                                       168       0     168
-
-  All 168 tests passed.
+  TOTAL                                       213       0     213
 ```
 
-Key behaviours preserved from the original:
-- Every suite runs even if earlier ones fail (failures accumulate).
-- Non-zero exit from any suite still causes `make test` to return non-zero.
-- Output from each suite is shown before the summary (suite output feeds forward as it completes, not held until the end).
+Every suite runs even if earlier ones fail. Non-zero exit from any suite causes
+`make test` to return non-zero.
 
-### Decision — Separate `make coverage` Target
+#### Decision — Coverage Target
 
-A new `coverage` target builds all source and test files with `--coverage` (gcov-compatible profiling) into a separate `build/cov/` tree. This keeps the normal debug build unaffected — `build/debug/` objects are never instrumented.
-
-Build layout:
+`make coverage` builds all source and tests with `--coverage` into a separate
+`build/cov/` tree (the normal debug build is never instrumented):
 
 ```
 build/cov/
-  src/          ← instrumented source objects (.o + .gcno)
-  tests/        ← instrumented test objects (.o + .gcno)
-  test_*        ← instrumented test binaries
+  src/          ← instrumented source objects
+  tests/        ← instrumented test objects
   coverage.info ← lcov capture (if lcov installed)
-  html/         ← genhtml output (if lcov installed)
+  html/         ← genhtml HTML report (if lcov installed)
 ```
 
-After running all test binaries, the coverage report is produced:
+With `lcov` installed (`brew install lcov` / `apt install lcov`): full HTML
+report at `build/cov/html/index.html`. Without lcov: raw gcov output per file.
 
-- **With `lcov` installed** (`brew install lcov`): runs `lcov --capture`, strips system headers and test files, prints `lcov --summary`, and generates an HTML report at `build/cov/html/index.html`.
-- **Without `lcov`**: runs `gcov -o build/cov/src/ src/*.c` and prints per-file line coverage from the gcov output. Prompts the user to install lcov for a full report.
+`make check` runs both `test` then `coverage` — full validation gate for
+releases.
 
-### Coverage Baseline (2026-03)
+#### Coverage Baseline (2026-03, 213 tests)
 
-Coverage measured against all 168 tests:
-
-| File | Line Coverage |
+| File | Coverage |
 |---|---|
-| `src/block.c` | 100% of 26 lines |
-| `src/consensus.c` | 100% of 25 lines |
-| `src/sha256.c` | 100% of 68 lines |
-| `src/pow.c` | 96.5% of 57 lines |
-| `src/log.c` | 97.1% of 34 lines |
-| `src/pos.c` | 91.9% of 37 lines |
-| `src/storage.c` | 82.2% of 197 lines |
-| `src/crypto.c` | 80.0% of 55 lines |
-| `src/transaction.c` | 78.8% of 33 lines |
-| `src/chain.c` | 60.9% of 138 lines |
-| `src/network.c` | 0% of 58 lines |
+| `src/block.c` | 100% |
+| `src/consensus.c` | 100% |
+| `src/sha256.c` | 100% |
+| `src/pow.c` | ~97% |
+| `src/log.c` | ~97% |
+| `src/pos.c` | ~92% |
+| `src/storage.c` | ~82% |
+| `src/crypto.c` | ~80% |
+| `src/transaction.c` | ~79% |
+| `src/chain.c` | ~65% |
+| `src/network.c` | ~35% |
 
 Notable gaps:
-- **`chain.c` (60.9%)** — `chain_propose()` stub, GHOST fork-choice paths, and some error branches in `chain_validate` are not yet exercised.
-- **`network.c` (0%)** — Network module has no tests. The module is a stub pending P2P implementation (ADR-001).
-
-### Files Changed
-
-| File | Change |
-|---|---|
-| `Makefile` | Added `COV_*` variables and build rules for `build/cov/`; rewrote `test` target shell to capture output and print summary; added `coverage` phony target |
+- **`chain.c`** — GHOST fork-choice paths and some `chain_validate` error
+  branches not yet exercised
+- **`network.c`** — live TLS connections cannot be tested without a real
+  server; argument-validation and serialization paths are covered; the accept
+  loop is not
 
 ---
 
----
+### ADR-014: Network Module — TLS Security, SOLID Rewrite
 
-## ADR-014: Network Module — TLS Security, Clean Architecture, SOLID Rewrite
+**Date:** 2026-03 · **Status:** Adopted · **Files:** `inc/network.h`, `src/network.c`
 
-**Date:** 2026-03
-**Status:** Adopted
+#### Context — Problems in Original network.c
 
-### Context
-
-The original `network.c` was a prototype with significant security gaps and architectural violations that made it unsuitable for production use. A full review against SOLID principles, clean code methodology, and security-first requirements was conducted before any further network work.
-
-### Problems Found
-
-**Security (blockers):**
+**Security blockers:**
 
 | # | Issue |
-|---|-------|
-| S1 | No server certificate or private key was loaded — TLS handshake always failed |
-| S2 | No peer certificate verification (`SSL_VERIFY_NONE` default) — MITM trivially possible |
-| S3 | No minimum TLS version enforced — downgrade attacks possible |
-| S4 | 256-byte receive buffer — Dilithium-3 signature alone is 3 293 bytes; real blocks silently truncated |
-| S5 | `SSL_read()` return value ignored — failed reads treated as empty input |
-| S6 | No input validation on received bytes before acting on them |
-| S7 | `SSL_shutdown()` called once only — TLS half-close; peer left in undefined state |
-| S8 | OpenSSL 1.x deprecated init API (`SSL_load_error_strings`, `OpenSSL_add_ssl_algorithms`) |
+|---|---|
+| S1 | No server certificate loaded — TLS handshake always failed |
+| S2 | `SSL_VERIFY_NONE` default — MITM trivially possible |
+| S3 | No minimum TLS version — downgrade attacks possible |
+| S4 | 256-byte receive buffer — Dilithium-3 signature alone is 3293 bytes; blocks silently truncated |
+| S5 | `SSL_read()` return value ignored |
+| S6 | No input validation on received bytes |
+| S7 | `SSL_shutdown()` called once — TLS half-close; peer in undefined state |
+| S8 | Deprecated OpenSSL 1.x init API |
 
-**Architecture / SOLID:**
+**Architecture:**
+- Global `SSL_CTX *ctx` — SRP and OCP violation
+- Six `exit()` calls in library code
+- Hard-coded `SERVER_IP` / `SERVER_PORT` — OCP violation
+- `serialize_block` and `broadcast_block` commented out — disconnected
+- All output via `printf` — bypassed `log_*` infrastructure
 
-- Global `SSL_CTX *ctx` (SRP + OCP violation); shadowed by a local variable in the same TU.
-- `init_tls()` created the global but `start_network_server()` created its own — dead function.
-- `start_network_server()` mixed socket setup, TLS setup, accept loop, and I/O in one function.
-- `create_client_context()` implemented but not exported in the header — dead private function.
-- Six `exit()` calls in a library module — callers lost all error handling control.
-- Hard-coded `SERVER_IP` and `SERVER_PORT` `#define`s — OCP violation.
-- `serialize_block` and `broadcast_block` commented out — module was disconnected from the chain.
-- All output via `printf` / `fprintf(stderr)` — bypassed `log_*` infrastructure.
+#### Decision
 
-### Decision
+Complete rewrite with the following contracts:
 
-Complete rewrite of `network.h` / `network.c` with the following design:
+**No global state.** `NetContext` is opaque. Each context is fully independent.
 
-**No global state.** An opaque `NetContext` struct owns the `SSL_CTX` and configuration. Each context is fully independent. Callers create, use, and free their own context.
+**`NetConfig`-driven.** Single struct for cert paths, CA bundle, bind address,
+port, and PQC group. No compile-time constants for runtime values.
 
-**Configuration-driven.** A `NetConfig` struct is the single point of configuration for cert paths, CA bundle, bind address, port, and PQC group. No compile-time constants for runtime values.
+**Security-first:**
+- TLS 1.3 minimum enforced on every context
+- PQC hybrid group (`p256_kyber768`) set when `cfg->pqc_group != NULL`
+- Client contexts always enable `SSL_VERIFY_PEER`
+- Server contexts optionally enable mutual TLS when `ca_file` is supplied
+- Bidirectional `tls_shutdown()` on every connection close
+- Receive buffer `NET_BLOCK_BUF_SIZE = 4096` (sufficient for header-only broadcast)
 
-**Security-first contract:**
-- TLS 1.3 minimum enforced on every context (client and server).
-- PQC hybrid group (`p256_kyber768`) is set when `cfg->pqc_group` is non-NULL. NULL skips PQC enforcement (test environments without OQS provider).
-- Client contexts always enable `SSL_VERIFY_PEER`.
-- Server contexts optionally enable mutual TLS via `SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT` when `ca_file` is supplied.
-- Bidirectional `tls_shutdown()` on every connection close.
-- `SSL_read()` return value checked; failed reads logged and discarded.
-- Receive buffer `NET_BLOCK_BUF_SIZE = 4096` — sufficient for block header broadcast (see Serialization).
+**No `exit()` calls.** All functions return error codes.
 
-**No `exit()` calls.** All functions return error codes. Callers decide recovery.
+**Header-only broadcast.** Only block header fields are serialized and sent.
+Full transaction bodies are fetched on demand. This keeps broadcast payloads
+small and avoids transmitting unvalidated Dilithium signatures over the wire
+before the receiving peer has validated the block header.
 
-**Block serialization policy.** Only block header fields (index, timestamp, hashes, nonce, consensus, tx_count) are broadcast. Full transaction bodies (including Dilithium-3 signatures, up to ~145 KB per block) are fetched on demand. This keeps broadcast payloads small and avoids transmitting unvalidated key material over the wire.
+**Single-threaded server.** `net_server_run()` handles one connection at a
+time — appropriate for Raspberry Pi / low-concurrency nodes. Threading can be
+added later without changing the API.
 
-**Single-threaded server.** `net_server_run()` handles one connection at a time. This is a deliberate trade-off appropriate for Raspberry Pi / low-concurrency nodes. Threading can be added later without changing the API.
-
-**`log_*` throughout.** All output uses the project-standard `log_info` / `log_warn` / `log_error` macros.
-
-### API
+#### API
 
 ```c
 NetContext *net_context_server(const NetConfig *cfg);
 NetContext *net_context_client(const NetConfig *cfg);
-void        net_context_free(NetContext *ctx);           /* NULL-safe */
+void        net_context_free(NetContext *ctx);               /* NULL-safe */
 
-int net_serialize_block(const Block *block, char *buf, size_t bufsz);
-int net_broadcast_block(NetContext *ctx, const Block *block,
-                        const char *peer_addr, uint16_t peer_port);
-int net_server_run(NetContext *ctx);
+int net_serialize_block  (const Block *block, char *buf, size_t bufsz);
+int net_deserialize_block(const char *buf, size_t len, Block *out);
+int net_broadcast_block  (NetContext *ctx, const Block *block,
+                          const char *peer_addr, uint16_t peer_port);
+int net_server_run       (NetContext *ctx, Chain *chain);
 ```
 
-### PQC Group Note
+`net_server_run(ctx, chain)` — when `chain != NULL`, received blocks are
+deserialized, validated via `block_verify_hash`, and added to the chain via
+`chain_add`. When `chain == NULL`, received blocks are logged and discarded
+(monitor/inspection mode).
 
-`p256_kyber768` is a hybrid classical P-256 + Kyber-768 group. If classical ECC is broken by a quantum adversary, Kyber-768 still provides post-quantum security. If Kyber is broken, P-256 still provides classical security. This defence-in-depth is the standard transition approach endorsed by NIST.
+`net_deserialize_block` parses the `key:value\n` wire format and calls
+`block_verify_hash` on the result before returning — integrity is enforced at
+the deserialization layer.
 
-The OQS OpenSSL provider must be loaded at runtime for PQC groups to be available. Tests use `pqc_group = NULL` to avoid a hard dependency on the provider in CI environments.
+#### PQC Group Note
 
-### Pending
+`p256_kyber768` is a hybrid P-256 + Kyber-768 group. If classical ECC is
+broken by a quantum adversary, Kyber-768 still provides security. If Kyber is
+broken, P-256 still provides classical security. This defence-in-depth is the
+standard NIST-recommended transition approach.
 
-- `net_server_run()` currently logs received bytes; it needs to call a block deserializer and `chain_add()` once that interface is defined.
-- Multi-peer broadcasting (fan-out to all known peers) belongs in `chain_propose()` using `net_broadcast_block()` per peer.
+The OQS OpenSSL provider must be loaded at runtime for PQC groups to be
+available. Tests use `pqc_group = NULL` to avoid a hard dependency on the
+provider in CI environments.
 
-### Files Changed
+#### Test Coverage
 
-| File | Change |
+25 tests across 5 groups in `test_network.c`:
+
+| Group | Tests |
 |---|---|
-| `inc/network.h` | Full rewrite — `NetConfig`, opaque `NetContext`, secure API |
-| `src/network.c` | Full rewrite — no global state, TLS 1.3 min, `SSL_VERIFY_PEER`, bidirectional shutdown, `log_*` |
-| `tests/test_network.c` | New — 20 unit tests across 4 groups |
+| `network/context/server` | NULL config, null cert, null key, missing cert file, valid config, free(NULL) |
+| `network/context/client` | NULL config, no cert required, missing ca_file |
+| `network/serialize` | NULL block, NULL buf, zero bufsz, buf too small, basic (field tags), NUL-terminated, distinct blocks |
+| `network/deserialize` | NULL buf, zero len, NULL out, garbage (hash verify fails), round-trip (serialize → deserialize, fields match) |
+| `network/broadcast` | NULL ctx, NULL block, NULL addr, invalid IP |
 
 ---
 
-## ADR-015: Dead Code Removal — iterator.h and common.h Cleanup
+### ADR-015: Dead Code Removal — iterator.h and common.h
 
-**Date:** 2026-03
-**Status:** Adopted
+**Date:** 2026-03 · **Status:** Adopted
 
-### Context
+#### Context
 
-Two header files were present in `inc/` that were either completely unused or contained broken macro references.
-
-### Problems Found
+Two header files in `inc/` were unused or contained broken macro references.
 
 **`inc/iterator.h`:**
-- Declared `iterate()` and `next_block()` but had no corresponding `iterator.c`.
-- Was not `#include`d anywhere in the codebase.
-- `Iterator.next` field duplicated `Block.next` from `block.h` without adding value.
-- Pure dead code — no implementation, no consumers.
+- Declared `iterate()` and `next_block()` with no corresponding `iterator.c`
+- Not `#include`d anywhere
+- `Iterator.next` duplicated `Block.next` from `block.h` without adding value
 
 **`inc/common.h`:**
-- `CHECKNULL(x)` and `CHECKZERO(x)` only called `Warn(...)` but did not call `FAIL` — they were silent no-ops that gave a false sense of guard coverage.
-- `Info` and `Warn` were undefined identifiers — the file referenced macros that did not exist anywhere in the codebase (likely intended aliases for `log_info` / `log_warn` that were never defined). The file would fail to compile if included.
-- Was not `#include`d anywhere in the codebase.
+- `CHECKNULL(x)` and `CHECKZERO(x)` called `Warn(...)` which was undefined
+- `Info` and `Warn` were undefined identifiers — file would fail to compile
+- `START`/`FAIL`/`RETURN` macros were incompatible with the existing codebase
+  (see analysis below)
+- Not `#include`d anywhere
 
-### Decision
+#### Decision
 
-**`inc/iterator.h`:** Deleted. Block traversal is done via `Block.next` directly. If a proper iterator abstraction is needed in the future, it should be implemented as `iterator.c` + `iterator.h` together, with tests.
+Both files deleted. Block traversal is done via `Block.next` directly. If a
+proper iterator abstraction is needed, it should be implemented as a matching
+`iterator.c` + `iterator.h` pair with tests.
 
-**`inc/common.h`:** Initially rewritten (fixed `Info`/`Warn` refs, corrected `CHECKNULL`/`CHECKZERO` to call `FAIL`), then **deleted** — see follow-up analysis below.
+#### Why common.h Was Not Salvageable
 
-### Follow-up: common.h Deleted
+After a full applicability audit, `START`/`FAIL`/`RETURN` macros cannot be
+safely applied to any existing function:
 
-After the rewrite, a full applicability audit across all source files showed that the `START`/`FAIL`/`RETURN` macros cannot be safely applied to any existing function because:
-
-1. **Resource cleanup** — `storage.c`, `chain.c`, `transaction.c`, and `main.c` all acquire heap, file, or OQS objects mid-function. `FAIL` breaks out immediately, skipping cleanup and causing leaks.
-2. **Loops with internal checks** — `chain_validate`, `cmd_log`, `storage_scan` have failure checks inside `for`/`while` loops; `FAIL` would break the loop, not the `START` scope.
-3. **Return type mismatches** — several functions return `Block*`, `void`, or custom exit codes (`0`/`1`/`2`); `RETURN` (which returns `int STATUS`) is wrong for all of them.
-4. **Log noise** — `START` emits `log_info("Start >")` on every call, making it unsuitable for library functions called frequently (e.g. `block_verify_hash`, `storage_read`).
-5. **Zero consumers** — `common.h` was never `#include`d anywhere.
-
-Conclusion: the macros have a contract too narrow for the existing codebase and add file footprint with no benefit. Deleted entirely.
-
-### Files Changed
-
-| File | Change |
-|---|---|
-| `inc/iterator.h` | Deleted — no implementation, no consumers |
-| `inc/common.h` | Deleted — zero consumers; macro contract incompatible with existing code |
-
+1. **Resource cleanup** — `storage.c`, `chain.c`, `transaction.c`, and `main.c`
+   acquire heap/file/OQS objects mid-function; `FAIL` breaks out immediately,
+   causing leaks
+2. **Loops with internal checks** — `chain_validate`, `storage_scan` have
+   failure checks inside loops; `FAIL` would break the loop, not the scope
+3. **Return type mismatches** — functions return `Block*`, `void`, or custom
+   exit codes (`0/1/2`); `RETURN` (which returns `int STATUS`) is wrong for all
+4. **Log noise** — `START` emits `log_info("Start >")` on every call,
+   unsuitable for frequently-called functions like `block_verify_hash`
+5. **Zero consumers** — the file was never `#include`d anywhere
 
 ---
 
-## ADR-016: Deployment — Raspberry Pi + USB SSD, Native systemd
+### ADR-016: Deployment — Raspberry Pi + USB SSD, Native systemd
 
-**Date:** 2026-03
-**Status:** Adopted
+**Date:** 2026-03 · **Status:** Adopted
 
-### Decision
+#### Decision
 
 QuteChain nodes are deployed natively on **Raspberry Pi 4 or 5** with an
-**attached USB SSD** (not microSD).  No Docker in production.  Docker Compose
+**attached USB SSD** (not microSD). No Docker in production. Docker Compose
 is permitted only for local development.
 
-### Hardware
+#### Hardware
 
 | Component | Choice | Rationale |
 |---|---|---|
 | Board | Raspberry Pi 4 (4 GB) or Pi 5 (8 GB) | Sufficient RAM; USB 3.0 for SSD; widely available |
-| Storage | USB 3.0 SSD (≥ 64 GB) | MicroSD has ~10k write cycles and will fail under `.chain/` write load. SSD endures millions of cycles. |
-| Network | Gigabit Ethernet (preferred) or Wi-Fi | Wired is more reliable for P2P sync |
+| Storage | USB 3.0 SSD (≥ 64 GB) | MicroSD has ~10k write cycles — will fail under `.chain/` write load; SSD endures millions |
+| Network | Gigabit Ethernet (preferred) | Wired is more reliable for P2P sync |
 | Power | Official Pi PSU (5 V / 3 A) | Undervoltage causes data corruption on SSD writes |
 
 **Never use microSD for the `.chain/` directory on a production node.**
 Symlink or bind-mount `.chain/` to the SSD path from day one.
 
-### Software Stack
+#### Software Stack
 
 ```
 Raspberry Pi OS Lite (64-bit, Debian-based)
 ├── blocky binary          → /usr/local/bin/blocky
+├── start_chain binary     → /usr/local/bin/start_chain
 ├── systemd unit           → /etc/systemd/system/blocky.service
-├── chain data             → /mnt/ssd/chain/  (USB SSD mount point)
-│   ├── .chain/            → the blocky working directory
-│   └── tls-cert.pem       → node TLS certificate
-│   └── tls-key.pem        → node TLS private key (chmod 600)
-│   └── peers              → one ip:port per line
-└── WireGuard              → /etc/wireguard/wg0.conf  (mesh VPN between nodes)
+└── chain data             → /mnt/ssd/chain/
+    ├── .chain/            → blocky working directory
+    ├── tls-cert.pem       → node TLS certificate
+    ├── tls-key.pem        → node TLS private key (chmod 600)
+    └── peers              → one ip:port per line
 ```
 
-### systemd Unit
+WireGuard mesh: `/etc/wireguard/wg0.conf`
+
+#### systemd Unit
 
 ```ini
 [Unit]
@@ -1432,11 +1504,10 @@ PrivateTmp=true
 WantedBy=multi-user.target
 ```
 
-### Multi-Node Mesh (WireGuard)
+#### Multi-Node Mesh (WireGuard)
 
-For a cluster of Raspberry Pi nodes on different networks or subnets, use
-**WireGuard** to create a private mesh.  Each node's `.chain/peers` file
-lists the WireGuard IP addresses of its peers.
+WireGuard creates a private mesh between Pi nodes on different networks. Each
+node's `.chain/peers` lists WireGuard IP addresses:
 
 ```
 # .chain/peers
@@ -1447,31 +1518,63 @@ lists the WireGuard IP addresses of its peers.
 This eliminates the need to expose port 8333 to the public internet — all
 inter-node traffic traverses the encrypted WireGuard tunnel.
 
-### TLS Certificate Strategy
+#### TLS Certificate Strategy
 
 | Environment | Certificate | Notes |
 |---|---|---|
-| Single-node / dev | Self-signed (openssl req -x509) | CA bundle must be distributed to all peers |
-| Multi-node mesh | Self-signed CA + per-node certs | Issue a local CA cert; sign each node cert; distribute CA to all peers' `.chain/tls-ca.pem` |
-| Public network | Let's Encrypt (if node has a DNS name) | Enables zero-config peer verification via system CA store |
+| Single-node / dev | Self-signed (`openssl req -x509`) | CA bundle must be distributed to all peers |
+| Multi-node mesh | Self-signed CA + per-node certs | Local CA cert; sign each node cert; distribute CA to all peers |
+| Public network | Let's Encrypt (if DNS name) | Zero-config peer verification via system CA store |
 
-### Avoiding Docker in Production
+#### Avoiding Docker in Production
 
-Docker adds container overhead (memory, I/O layers) and complicates `systemd`
-integration on a single-board computer.  The blocky binary is a single static-
-linked C executable with no runtime dependencies beyond OpenSSL and liboqs —
-it is already lightweight enough to run directly under systemd.
+Docker adds container overhead (memory, I/O layers) and complicates systemd
+integration on a single-board computer. The `blocky` binary has no runtime
+dependencies beyond OpenSSL and liboqs — it runs directly under systemd.
 
-Docker Compose remains useful for spinning up a local multi-node test
-environment on a development machine.
+Docker Compose is useful for spinning up a local multi-node test environment
+on a development machine.
 
-### Rationale
+#### Rationale
 
 | Concern | Solution |
 |---|---|
-| Storage durability | USB SSD survives millions of write cycles; microSD does not |
-| Energy | Pi runs on ~5 W idle; full PoW mining adds ~2–3 W |
-| Security | All inter-node traffic encrypted (TLS 1.3 + WireGuard) |
-| Quantum resistance | TLS key exchange uses p256_kyber768 when OQS provider loaded |
-| Operations | systemd handles restart, logging (journald), and boot startup |
+| Storage durability | USB SSD: millions of write cycles vs microSD ~10k |
+| Energy | Pi runs ~5 W idle; full PoW mining adds ~2–3 W |
+| Security | TLS 1.3 + WireGuard on all inter-node traffic |
+| Quantum resistance | p256_kyber768 TLS key exchange when OQS provider loaded |
+| Operations | systemd handles restart, logging (journald), boot startup |
 | Isolation | WireGuard mesh avoids exposing node ports to the public internet |
+
+---
+
+## Part IV — Pending Work
+
+Items that are designed (ADR adopted) but not yet implemented:
+
+### High Priority
+
+| Work Item | ADR | Location |
+|---|---|---|
+| GHOST fork-choice (`fork_choice()`) | ADR-002 | `chain.c` — helper for `chain_validate` or new `chain_fork_choice()` |
+| Validator registry (public keys + stake) | ADR-003 | New `validator.c` or extension of `storage.c` |
+| VRF leader selection | ADR-003 | Build from PQC primitives; Algorand VRF is a reference |
+| Dilithium-3 block signatures | ADR-003 | Wire `verify_block_signature()` in `consensus.c` to key registry |
+
+### Medium Priority
+
+| Work Item | ADR | Notes |
+|---|---|---|
+| Stake threshold enforcement | ADR-010 | Minimum stake before a validator can propose (Sybil resistance) |
+| Equivocation guard | ADR-010 | Prevent proposing two blocks for the same slot |
+| `net_server_run()` receive side | ADR-014 | Transaction body fetch on demand (headers only broadcast today) |
+| Full Merkle re-verification on read | ADR-012 | `compute_merkle_root` + compare when reading from storage |
+
+### Low Priority / Future
+
+| Work Item | Notes |
+|---|---|
+| OQS OpenSSL provider runtime loading | Required for `NET_PQC_GROUP = p256_kyber768` in production |
+| Multi-threaded `net_server_run()` | One connection at a time today; pthread-based fan-in for higher concurrency |
+| Transaction body fetch protocol | Peers request full transaction bodies by block hash after accepting the header |
+| `make check` in CI | GitHub Actions or similar; run `make check` on every PR |
