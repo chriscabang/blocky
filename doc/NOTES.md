@@ -395,17 +395,22 @@ The goal of QuteChain is to create a blockchain that operates like git. Both
 systems are content-addressed DAGs: commits and blocks are identified by the
 hash of their content plus their parent's hash.
 
-| Git operation | Blockchain equivalent |
+| Git operation | `blocky` equivalent |
 |---|---|
 | `git init` | `blocky init` — initialize chain, create genesis block |
-| `git checkout <branch>` | Select chain tip (parent block) to build on |
-| `git add` | `blocky send` — stage a transaction |
-| `git commit` | `blocky commit` — build and mine a block |
-| `git commit -S` | Sign block with Dilithium key (ADR-003) |
+| `git status` | `blocky status` — show chain tip and staged transactions |
+| `git add <file>` | `blocky send --from X --to Y --amount N` — stage a transaction |
+| `git commit` | `blocky commit` — seal staged transactions into a new block |
+| `git commit -S` | `blocky commit` + Dilithium signing — sign block (ADR-003, pending) |
 | `git push` | `blocky propose` — broadcast block to peers |
-| Branch pointer | Chain tip / fork |
-| Competing branches | Chain forks resolved by canonical chain rule |
-| Merge | Consensus — one branch becomes canonical |
+| `git log` | `blocky log [--limit N]` — list blocks newest-first |
+| `git show <hash>` | `blocky show <hash>` — human-readable block detail |
+| `git cat-file -p <hash>` | `blocky cat <hash>` — raw field dump of a block |
+| `git verify-commit <hash>` | `blocky verify <hash>` — verify block hash integrity |
+| `git checkout <branch>` | automatic — GHOST selects heaviest chain tip (ADR-002) |
+| Branch pointer | chain tip stored in `.chain/refs/` |
+| Competing branches | chain forks — resolved by GHOST subtree weight (ADR-002) |
+| Merge | consensus — GHOST canonical selection; no explicit merge command |
 
 #### Decision
 
@@ -471,8 +476,12 @@ The `consensus` field in `Block` already distinguishes these two modes.
 
 #### Implementation Status
 
-GHOST fork-choice logic (`fork_choice()`) is pending. It belongs in `chain.c`
-as a helper called by `chain_validate` or a new `chain_fork_choice` function.
+GHOST fork-choice logic (`fork_choice()`) is **pending**. It belongs in
+`src/chain.c` as a static helper, called from `chain_validate()` (declared in
+`inc/chain.h`) when two competing tips are both structurally valid. A new
+exported function `chain_fork_choice(const Chain *c)` should return a pointer
+to the heaviest-subtree tip. The `consensus` field already present in `Block`
+carries the mode (`POW` / `POS`) needed to select the correct weight metric.
 
 ---
 
