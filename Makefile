@@ -56,7 +56,7 @@ LDFLAGS  += -L$(LIBS)/liboqs/build/lib -loqs
 
 .PHONY: all release debug test coverage check utils clean help
 
-all: release debug
+all: release debug utils
 
 utils: $(UTILS_DIR) $(UTILS_BIN)
 
