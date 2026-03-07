@@ -8,8 +8,12 @@ INCLUDE  := $(ROOT)/inc
 BUILD    := $(ROOT)/build
 
 SRC      := $(wildcard src/*.c)
-# UTILS    := $(wildcard utils/*.c)
 SRCS     := $(filter-out src/main.c, $(SRC))
+
+# Utils (standalone demo binaries — link against debug objects)
+UTILS_SRC := $(wildcard utils/*.c)
+UTILS_DIR := $(BUILD)/utils
+UTILS_BIN := $(patsubst utils/%.c, $(UTILS_DIR)/%, $(UTILS_SRC))
 
 # Release build dirs and objects
 REL_DIR  := $(BUILD)/release
@@ -50,9 +54,17 @@ LDFLAGS  += -L$(LIBS)/liboqs/build/lib -loqs
 
 .DEFAULT_GOAL = all
 
-.PHONY: all release debug test coverage check clean help
+.PHONY: all release debug test coverage check utils clean help
 
 all: release debug
+
+utils: $(UTILS_DIR) $(UTILS_BIN)
+
+$(UTILS_DIR):
+	mkdir -p $(UTILS_DIR)
+
+$(UTILS_DIR)/%: utils/%.c $(DBG_OBJ) | $(UTILS_DIR) debug
+	$(CC) $(DBG_CFLAGS) $(LDFLAGS) -o $@ $< $(DBG_OBJ)
 
 release: $(REL_DIR) $(REL_OBJ) $(REL_MAIN)
 	@echo "Linking $(PROJECT) release $(VERSION)..."
@@ -215,5 +227,6 @@ help:
 	@echo "  coverage  Rebuild with --coverage; report line coverage per file"
 	@echo "              (brew install lcov for full report + HTML output)"
 	@echo "  check     Run both test and coverage (full validation)"
+	@echo "  utils     Build demo utility binaries -> build/utils/"
 	@echo "  clean     Remove build artifacts and .chain data"
 	@echo "  help      Show this help message"

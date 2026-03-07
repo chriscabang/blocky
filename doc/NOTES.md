@@ -4,6 +4,82 @@ This document captures key architectural decisions and design discussions for th
 
 ---
 
+## Design Philosophy
+
+QuteChain is written in C and deliberately applies **SOLID principles** and **clean code** practices throughout. These are not aspirational — they are enforced at review time. The sections below translate each principle into concrete C conventions used in this codebase.
+
+### SOLID in C
+
+#### S — Single Responsibility
+Each `.c`/`.h` pair owns exactly one concern. A module that does two things should be two modules.
+
+| Module | Sole responsibility |
+|---|---|
+| `sha256.c` | FIPS 180-4 SHA-256 computation — nothing else |
+| `storage.c` | On-disk object store and ref management |
+| `network.c` | TLS connection lifecycle and block serialization |
+| `pow.c` | Proof-of-work mining and validation |
+| `transaction.c` | Transaction signing and verification |
+| `chain.c` | In-memory chain state and pool allocator |
+
+`main.c` is the only module permitted to coordinate across modules. All others are strictly single-purpose.
+
+#### O — Open/Closed
+Public headers define stable interfaces. Callers depend on the header, never on internal struct layout or file-level statics. New behavior is added by extension, not by modifying existing interfaces.
+
+- Adding a new consensus algorithm means adding a new module and a new `consensus` enum value — not modifying `block.h` or `chain.c`.
+- `net_context_server` / `net_context_client` accept a `NetConfig` struct; adding a new TLS option is a new field in `NetConfig`, not a new function signature.
+
+#### L — Liskov Substitution
+Any function accepting `const Block *` or `const Chain *` must work correctly for any valid instance of that type, regardless of how it was constructed. There are no hidden preconditions beyond what the header documents.
+
+- `block_verify_hash(block)` is meaningful for any non-NULL Block, whether loaded from disk or freshly created.
+- `chain_validate(chain, block)` treats every Block identically — genesis blocks are distinguished only by their `previous_hash` value, not by type.
+
+#### I — Interface Segregation
+Headers expose only what callers need. Internal helpers are `static` in the `.c` file and invisible to the rest of the system.
+
+- `NetContext` is opaque — callers hold a pointer and call functions; no field access.
+- `storage.h` exposes five functions; the file path layout (`.chain/blocks/…`) is entirely internal.
+- `sha256.h` exposes `sha256_ctx`, `sha256_init`, `sha256_update`, `sha256_final` — and nothing else.
+
+#### D — Dependency Inversion
+High-level modules depend on abstractions (headers), not on low-level implementation details.
+
+- `chain.c` calls `storage_insert` / `storage_checkout` — it has no knowledge of file paths or `fwrite`.
+- `pow.c` calls `block_compute_hash` — it has no knowledge of SHA-256 internals.
+- `network.c` calls `log_info` / `log_error` — it has no knowledge of how log output is routed.
+
+---
+
+### Clean Code Conventions
+
+**Naming — snake_case everywhere.**
+All identifiers (functions, variables, struct fields, macros where readable), source filenames, and binary names follow snake_case. Compound words are always separated: `start_chain`, `mine_block`, `propose_block`, `key_gen`. This mirrors the C standard library and eliminates ambiguity between `startchain`, `StartChain`, and `start_chain`.
+
+**No `exit()` in library code.**
+Only `main.c` and utility `main()` functions may terminate the process. Every library function returns an error code (`NULL`, `-1`, `EXIT_FAILURE`) and lets the caller decide. This makes all modules safe to link into test harnesses and future daemons.
+
+**No global mutable state.**
+Each `NetContext`, `Chain`, and `OQS_SIG` instance is heap-allocated, caller-owned, and fully independent. There are no module-level globals. Concurrent future use (multiple chains, multiple TLS contexts) requires no locking changes to existing code.
+
+**Const-correctness.**
+Functions that do not modify their inputs declare them `const`. This is enforced: `block_verify_hash(const Block *)`, `chain_validate(const Chain *, const Block *)`, `net_serialize_block(const Block *, …)`. Violations are treated as bugs.
+
+**One function, one job.**
+Functions are short and named after what they do, not how they do it. `apply_common_security` in `network.c` encapsulates the TLS 1.3 + PQC group setup so that both server and client paths share identical policy without duplication.
+
+**Errors are values, not exceptions.**
+Return codes are checked at every call site. The pattern is: acquire resources, check each step, clean up on any failure path. `goto done` with a single cleanup block is preferred over duplicated `free` / `SSL_free` chains.
+
+**Private key material is zeroed before release.**
+Any function that holds a private key or secret seed calls `OQS_MEM_cleanse` before `free`. This applies to utility binaries (`send_payment`, `key_gen`) and any future signing code.
+
+**Unit test coverage is mandatory.**
+Every public `.h`/`.c` module has a corresponding `tests/test_<module>.c` using CMocka. A module is not considered complete until `make test` passes with that suite included. Coverage is tracked via `make check`.
+
+---
+
 ## ADR-001: Git-Like Blockchain Model
 
 **Date:** 2025-03
