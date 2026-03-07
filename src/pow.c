@@ -10,16 +10,6 @@
 
 /* ── helpers ──────────────────────────────────────────────────────────── */
 
-/* Encode `len` raw bytes as lowercase hex into out[len*2 + 1]. */
-static void bytes_to_hex(const uint8_t *bytes, size_t len, char *out) {
-    static const char HEX[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[i * 2]     = HEX[(bytes[i] >> 4) & 0xf];
-        out[i * 2 + 1] = HEX[ bytes[i]       & 0xf];
-    }
-    out[len * 2] = '\0';
-}
-
 /*
  * Check whether the first `difficulty` hex characters of the raw digest
  * represent zero, without converting to hex string.
@@ -89,7 +79,7 @@ int mine_block(Block *block, uint32_t difficulty) {
         sha256_final(&ctx, digest);      /* wipes ctx (copy), not base */
 
         if (meets_difficulty_raw(digest, difficulty)) {
-            bytes_to_hex(digest, SHA256_DIGEST_LEN, (char *)block->hash);
+            sha256_to_hex(digest, SHA256_DIGEST_LEN, (char *)block->hash);
             log_info("mine_block: solved nonce=%u hash=%.16s...",
                      block->nonce, (char *)block->hash);
             return EXIT_SUCCESS;

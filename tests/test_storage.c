@@ -42,7 +42,7 @@ static Block *make_block(uint32_t index, const unsigned char *prev_hash) {
     b->previous_hash[1] = '\0';
   }
 
-  hash(b);
+  block_hash(b);
   return b;
 }
 

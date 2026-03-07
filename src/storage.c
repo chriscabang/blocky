@@ -39,7 +39,7 @@
 
 /* ── internal helpers ─────────────────────────────────────────────────── */
 
-static void init(void) {
+static int init(void) {
   static const char *dirs[] = {
     STORAGE_DIR, BLOCKS_DIR, REFS_DIR, HEADS_DIR, NULL
   };
@@ -47,7 +47,7 @@ static void init(void) {
   for (int i = 0; dirs[i]; i++) {
     if (mkdir(dirs[i], 0755) == -1 && errno != EEXIST) {
       log_error("Failed to create %s: %s", dirs[i], strerror(errno));
-      exit(EXIT_FAILURE);
+      return EXIT_FAILURE;
     }
   }
 
@@ -56,7 +56,7 @@ static void init(void) {
     FILE *f = fopen(HEAD_FILE, "w");
     if (!f) {
       log_error("Failed to create HEAD: %s", strerror(errno));
-      exit(EXIT_FAILURE);
+      return EXIT_FAILURE;
     }
     fprintf(f, REF_PREFIX "%s", MAIN_REF);
     fflush(f);
@@ -64,6 +64,8 @@ static void init(void) {
     fclose(f);
     log_debug("HEAD initialized -> %s", MAIN_REF);
   }
+
+  return EXIT_SUCCESS;
 }
 
 /* Write value to path, flushing to disk. */
@@ -110,7 +112,7 @@ int storage_insert(const Block *block) {
     return EXIT_FAILURE;
   }
 
-  init();
+  if (init() != EXIT_SUCCESS) return EXIT_FAILURE;
 
   const char *hash = (const char *)block->hash;
   char path[PATH_BUF];
@@ -258,7 +260,7 @@ int storage_checkout(const char *hash) {
     return EXIT_FAILURE;
   }
 
-  init();
+  if (init() != EXIT_SUCCESS) return EXIT_FAILURE;
 
   char content[PATH_BUF];
   memset(content, 0, sizeof(content));

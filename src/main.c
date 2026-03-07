@@ -130,7 +130,7 @@ static int cmd_log(int argc, char **argv)
             printf("block #%-4u  %s  ts=%ld  txns=%u\n",
                    b->index, hashes[i], (long)b->timestamp,
                    b->transaction_count);
-            free(b);
+            block_free(b);
         }
         free(hashes[i]);
     }

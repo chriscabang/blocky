@@ -29,7 +29,7 @@
  * @param block  Block to hash. Must be non-NULL.
  * @return EXIT_SUCCESS or EXIT_FAILURE.
  */
-int hash(Block *block);
+int block_hash(Block *block);
 
 /**
  * @brief Compute the Merkle root of a block's transactions.
@@ -38,10 +38,10 @@ int hash(Block *block);
  * in order. Writes a 64-char hex string into merkle_root.
  * Sets merkle_root to "0" if transaction_count == 0.
  *
- * @param block        Block whose transactions to summarise.
+ * @param block        Block whose transactions to summarise (read-only).
  * @param merkle_root  Caller-provided buffer of at least HASH_SIZE bytes.
  */
-void compute_merkle_root(Block *block, char *merkle_root);
+void compute_merkle_root(const Block *block, char *merkle_root);
 
 /**
  * @brief Sign a block with a Dilithium private key (stub).
@@ -50,7 +50,7 @@ void compute_merkle_root(Block *block, char *merkle_root);
  *
  * @return EXIT_FAILURE always.
  */
-int sign(Block *block, const char *private_key, char *signature);
+int block_sign(Block *block, const char *private_key, char *signature);
 
 /**
  * @brief Verify a block's Dilithium signature (stub).
@@ -59,6 +59,6 @@ int sign(Block *block, const char *private_key, char *signature);
  *
  * @return EXIT_FAILURE always.
  */
-int verify(const Block *block, const char *public_key);
+int block_verify_sig(const Block *block, const char *public_key);
 
 #endif /* CRYPTO_H */

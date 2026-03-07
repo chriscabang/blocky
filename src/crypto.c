@@ -16,21 +16,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── internal helpers ─────────────────────────────────────────────────── */
-
-/* Encode raw bytes as lowercase hex, writing out[len*2] + null terminator. */
-static void to_hex(const uint8_t *bytes, size_t len, char *out) {
-    static const char HEX[] = "0123456789abcdef";
-    for (size_t i = 0; i < len; i++) {
-        out[i * 2]     = HEX[(bytes[i] >> 4) & 0xf];
-        out[i * 2 + 1] = HEX[ bytes[i]       & 0xf];
-    }
-    out[len * 2] = '\0';
-}
-
 /* ── public API ───────────────────────────────────────────────────────── */
 
-void compute_merkle_root(Block *block, char *merkle_root) {
+void compute_merkle_root(const Block *block, char *merkle_root) {
     if (!block || !merkle_root) {
         log_error("compute_merkle_root: NULL argument");
         return;
@@ -58,12 +46,12 @@ void compute_merkle_root(Block *block, char *merkle_root) {
 
     uint8_t digest[SHA256_DIGEST_LEN];
     sha256_final(&ctx, digest);
-    to_hex(digest, SHA256_DIGEST_LEN, merkle_root);
+    sha256_to_hex(digest, SHA256_DIGEST_LEN, merkle_root);
 }
 
-int hash(Block *block) {
+int block_hash(Block *block) {
     if (!block) {
-        log_error("hash: NULL block");
+        log_error("block_hash: NULL block");
         return EXIT_FAILURE;
     }
 
@@ -88,22 +76,22 @@ int hash(Block *block) {
     sha256_final(&ctx, digest);
 
     /* Write 64-char hex + null into block->hash (HASH_SIZE = 65). */
-    to_hex(digest, SHA256_DIGEST_LEN, (char *)block->hash);
+    sha256_to_hex(digest, SHA256_DIGEST_LEN, (char *)block->hash);
 
     return EXIT_SUCCESS;
 }
 
-int sign(Block *block, const char *private_key, char *signature) {
+int block_sign(Block *block, const char *private_key, char *signature) {
     (void)block;
     (void)private_key;
     (void)signature;
-    log_error("sign: not implemented — pending Dilithium integration (ADR-003)");
+    log_error("block_sign: not implemented — pending Dilithium integration (ADR-003)");
     return EXIT_FAILURE;
 }
 
-int verify(const Block *block, const char *public_key) {
+int block_verify_sig(const Block *block, const char *public_key) {
     (void)block;
     (void)public_key;
-    log_error("verify: not implemented — pending Dilithium integration (ADR-003)");
+    log_error("block_verify_sig: not implemented — pending Dilithium integration (ADR-003)");
     return EXIT_FAILURE;
 }

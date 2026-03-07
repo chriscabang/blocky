@@ -193,7 +193,7 @@ int chain_show(const Chain *c, const char *hash) {
            b->index, (char *)b->hash, (char *)b->previous_hash,
            (long)b->timestamp, b->transaction_count);
 
-  free(b);
+  block_free(b);
   return EXIT_SUCCESS;
 }
 
@@ -212,7 +212,7 @@ void chain_list(const Chain *c, unsigned int blocks_per_page) {
     Block *b = storage_read(hashes[i]);
     if (b) {
       log_info("  [%u] %.16s...", b->index, hashes[i]);
-      free(b);
+      block_free(b);
     }
     free(hashes[i]);
   }

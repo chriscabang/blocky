@@ -247,10 +247,10 @@ static void test_block_hash_includes_consensus(void **state) {
     *state = b;
 }
 
-/* hash() on NULL block must return FAILURE without crashing. */
+/* block_hash() on NULL block must return FAILURE without crashing. */
 static void test_block_hash_null_block(void **state) {
     (void)state;
-    assert_int_equal(hash(NULL), EXIT_FAILURE);
+    assert_int_equal(block_hash(NULL), EXIT_FAILURE);
 }
 
 /* ── compute_merkle_root ─────────────────────────────────────────────── */

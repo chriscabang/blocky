@@ -34,4 +34,13 @@ void sha256_final (sha256_ctx *ctx, uint8_t digest[SHA256_DIGEST_LEN]);
 void sha256_digest(const void *data, size_t len,
                    uint8_t out[SHA256_DIGEST_LEN]);
 
+/**
+ * Encode raw bytes as a lowercase hex string.
+ * out must be at least len*2+1 bytes.  Writes a NUL terminator.
+ *
+ * Shared utility — avoids duplicating the same function in every module
+ * that formats SHA-256 output (crypto.c, pow.c).
+ */
+void sha256_to_hex(const uint8_t *bytes, size_t len, char *out);
+
 #endif /* SHA256_H */

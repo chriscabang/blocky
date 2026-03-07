@@ -153,6 +153,15 @@ void sha256_final(sha256_ctx *ctx, uint8_t digest[SHA256_DIGEST_LEN]) {
     memset(ctx, 0, sizeof(*ctx));
 }
 
+void sha256_to_hex(const uint8_t *bytes, size_t len, char *out) {
+    static const char HEX[] = "0123456789abcdef";
+    for (size_t i = 0; i < len; i++) {
+        out[i * 2]     = HEX[(bytes[i] >> 4) & 0xf];
+        out[i * 2 + 1] = HEX[ bytes[i]       & 0xf];
+    }
+    out[len * 2] = '\0';
+}
+
 void sha256_digest(const void *data, size_t len,
                    uint8_t out[SHA256_DIGEST_LEN]) {
     sha256_ctx ctx;

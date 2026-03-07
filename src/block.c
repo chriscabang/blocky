@@ -31,7 +31,7 @@ Block *block_create(uint32_t index, const unsigned char *prev_hash) {
 }
 
 int block_compute_hash(Block *block) {
-  return hash(block);
+  return block_hash(block);
 }
 
 int block_verify_hash(const Block *block) {
@@ -42,7 +42,7 @@ int block_verify_hash(const Block *block) {
   memset(copy.hash, 0, sizeof(copy.hash));
   copy.next = NULL; /* exclude runtime pointer from hash input */
 
-  if (hash(&copy) != EXIT_SUCCESS) return EXIT_FAILURE;
+  if (block_hash(&copy) != EXIT_SUCCESS) return EXIT_FAILURE;
 
   return (memcmp(copy.hash, block->hash, HASH_SIZE) == 0)
            ? EXIT_SUCCESS
