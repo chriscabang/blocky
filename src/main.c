@@ -365,8 +365,23 @@ static int cmd_commit(int argc, char **argv)
 static int cmd_propose(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    printf("propose: not yet implemented\n");
-    return 0;
+
+    Chain *c = chain_load();
+    if (!c) {
+        fprintf(stderr, "error: failed to load chain\n");
+        return 2;
+    }
+
+    int rc = chain_propose(c, c->head);
+    if (rc != EXIT_SUCCESS) {
+        fprintf(stderr, "error: chain_propose failed\n");
+    } else {
+        printf("Proposed block #%u (%.16s...)\n",
+               c->head->index, (char *)c->head->hash);
+    }
+
+    chain_unload(c);
+    return (rc == EXIT_SUCCESS) ? 0 : 2;
 }
 
 static int cmd_version(int argc, char **argv)

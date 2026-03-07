@@ -1370,3 +1370,108 @@ Conclusion: the macros have a contract too narrow for the existing codebase and 
 | `inc/iterator.h` | Deleted — no implementation, no consumers |
 | `inc/common.h` | Deleted — zero consumers; macro contract incompatible with existing code |
 
+
+---
+
+## ADR-016: Deployment — Raspberry Pi + USB SSD, Native systemd
+
+**Date:** 2026-03
+**Status:** Adopted
+
+### Decision
+
+QuteChain nodes are deployed natively on **Raspberry Pi 4 or 5** with an
+**attached USB SSD** (not microSD).  No Docker in production.  Docker Compose
+is permitted only for local development.
+
+### Hardware
+
+| Component | Choice | Rationale |
+|---|---|---|
+| Board | Raspberry Pi 4 (4 GB) or Pi 5 (8 GB) | Sufficient RAM; USB 3.0 for SSD; widely available |
+| Storage | USB 3.0 SSD (≥ 64 GB) | MicroSD has ~10k write cycles and will fail under `.chain/` write load. SSD endures millions of cycles. |
+| Network | Gigabit Ethernet (preferred) or Wi-Fi | Wired is more reliable for P2P sync |
+| Power | Official Pi PSU (5 V / 3 A) | Undervoltage causes data corruption on SSD writes |
+
+**Never use microSD for the `.chain/` directory on a production node.**
+Symlink or bind-mount `.chain/` to the SSD path from day one.
+
+### Software Stack
+
+```
+Raspberry Pi OS Lite (64-bit, Debian-based)
+├── blocky binary          → /usr/local/bin/blocky
+├── systemd unit           → /etc/systemd/system/blocky.service
+├── chain data             → /mnt/ssd/chain/  (USB SSD mount point)
+│   ├── .chain/            → the blocky working directory
+│   └── tls-cert.pem       → node TLS certificate
+│   └── tls-key.pem        → node TLS private key (chmod 600)
+│   └── peers              → one ip:port per line
+└── WireGuard              → /etc/wireguard/wg0.conf  (mesh VPN between nodes)
+```
+
+### systemd Unit
+
+```ini
+[Unit]
+Description=QuteChain P2P node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/ssd/chain
+ExecStart=/usr/local/bin/start_chain 8333 tls-cert.pem tls-key.pem
+Restart=on-failure
+RestartSec=5
+User=blocky
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Multi-Node Mesh (WireGuard)
+
+For a cluster of Raspberry Pi nodes on different networks or subnets, use
+**WireGuard** to create a private mesh.  Each node's `.chain/peers` file
+lists the WireGuard IP addresses of its peers.
+
+```
+# .chain/peers
+10.0.0.2:8333
+10.0.0.3:8333
+```
+
+This eliminates the need to expose port 8333 to the public internet — all
+inter-node traffic traverses the encrypted WireGuard tunnel.
+
+### TLS Certificate Strategy
+
+| Environment | Certificate | Notes |
+|---|---|---|
+| Single-node / dev | Self-signed (openssl req -x509) | CA bundle must be distributed to all peers |
+| Multi-node mesh | Self-signed CA + per-node certs | Issue a local CA cert; sign each node cert; distribute CA to all peers' `.chain/tls-ca.pem` |
+| Public network | Let's Encrypt (if node has a DNS name) | Enables zero-config peer verification via system CA store |
+
+### Avoiding Docker in Production
+
+Docker adds container overhead (memory, I/O layers) and complicates `systemd`
+integration on a single-board computer.  The blocky binary is a single static-
+linked C executable with no runtime dependencies beyond OpenSSL and liboqs —
+it is already lightweight enough to run directly under systemd.
+
+Docker Compose remains useful for spinning up a local multi-node test
+environment on a development machine.
+
+### Rationale
+
+| Concern | Solution |
+|---|---|
+| Storage durability | USB SSD survives millions of write cycles; microSD does not |
+| Energy | Pi runs on ~5 W idle; full PoW mining adds ~2–3 W |
+| Security | All inter-node traffic encrypted (TLS 1.3 + WireGuard) |
+| Quantum resistance | TLS key exchange uses p256_kyber768 when OQS provider loaded |
+| Operations | systemd handles restart, logging (journald), and boot startup |
+| Isolation | WireGuard mesh avoids exposing node ports to the public internet |

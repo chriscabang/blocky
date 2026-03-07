@@ -6,9 +6,12 @@
 #include "chain.h"
 #include "block.h"
 #include "consensus.h"
+#include "network.h"
 #include "storage.h"
 #include "log.h"
 
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -163,11 +166,72 @@ int chain_add(Chain *c, const Block *block) {
   return EXIT_SUCCESS;
 }
 
-int chain_propose(Chain *c, Block *block) {
-  (void)c;
-  (void)block;
-  log_error("chain_propose: not yet implemented");
-  return EXIT_FAILURE;
+int chain_propose(Chain *c, const Block *block) {
+  if (!c || !block) {
+    log_error("chain_propose: NULL argument");
+    return EXIT_FAILURE;
+  }
+
+  FILE *f = fopen(".chain/peers", "r");
+  if (!f) {
+    log_info("chain_propose: no peers file (.chain/peers); nothing to broadcast");
+    return EXIT_SUCCESS;
+  }
+
+  /*
+   * Anonymous client TLS — no client certificate (mutual TLS not required).
+   * CA verification uses the system store; nodes with self-signed certs should
+   * install their CA into .chain/tls-ca.pem or the system CA bundle.
+   * Set pqc_group to NET_PQC_GROUP once all peers load the OQS provider.
+   */
+  NetConfig cfg = {
+    .cert_file = NULL,
+    .key_file  = NULL,
+    .ca_file   = NULL,
+    .pqc_group = NULL,
+    .port      = 0,
+  };
+
+  NetContext *ctx = net_context_client(&cfg);
+  if (!ctx) {
+    log_error("chain_propose: failed to create TLS client context");
+    fclose(f);
+    return EXIT_FAILURE;
+  }
+
+  char line[128];
+  int  ok   = 0;
+  int  fail = 0;
+
+  while (fgets(line, (int)sizeof(line), f)) {
+    size_t len = strlen(line);
+    if (len > 0 && line[len - 1] == '\n') line[--len] = '\0';
+    if (len == 0) continue;
+
+    /* Parse "ip:port" — strrchr handles IPv6 addresses with embedded colons. */
+    char *colon = strrchr(line, ':');
+    if (!colon) {
+      log_warn("chain_propose: malformed peer entry '%s' (expected ip:port)",
+               line);
+      continue;
+    }
+    *colon = '\0';
+    uint16_t port = (uint16_t)atoi(colon + 1);
+
+    if (net_broadcast_block(ctx, block, line, port) == 0) {
+      ok++;
+    } else {
+      log_warn("chain_propose: broadcast to %s:%u failed", line, port);
+      fail++;
+    }
+  }
+
+  fclose(f);
+  net_context_free(ctx);
+
+  log_info("chain_propose: block %u broadcast — ok=%d fail=%d",
+           block->index, ok, fail);
+  return EXIT_SUCCESS;
 }
 
 void chain_info(const Chain *c) {

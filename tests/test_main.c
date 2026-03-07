@@ -122,12 +122,19 @@ static void test_help(void **state)
   assert_non_null(strstr(out, "commit"));
 }
 
-static void test_propose_stub(void **state)
+/*
+ * propose with an initialized chain and no peers file:
+ * must return 0 and print the proposed block hash.
+ */
+static void test_propose_no_peers(void **state)
 {
   (void)state;
-  char out[128];
+  char tmp[256];
+  assert_int_equal(run("init", tmp, sizeof(tmp)), 0);
+
+  char out[256];
   assert_int_equal(run("propose", out, sizeof(out)), 0);
-  assert_non_null(strstr(out, "not yet implemented"));
+  assert_non_null(strstr(out, "Proposed block #0"));
 }
 
 /* ── init ─────────────────────────────────────────────────────────────── */
@@ -369,7 +376,7 @@ int main(void)
   const struct CMUnitTest meta_tests[] = {
     cmocka_unit_test_setup_teardown(test_version,      setup, teardown),
     cmocka_unit_test_setup_teardown(test_help,         setup, teardown),
-    cmocka_unit_test_setup_teardown(test_propose_stub, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_propose_no_peers, setup, teardown),
   };
 
   const struct CMUnitTest init_tests[] = {

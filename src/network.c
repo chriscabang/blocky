@@ -10,6 +10,9 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "block.h"
+#include "chain.h"
+#include "crypto.h"
 #include "log.h"
 #include "network.h"
 
@@ -256,6 +259,78 @@ int net_serialize_block(const Block *block, char *buf, size_t bufsz)
     return n;
 }
 
+/* ── Deserialization ──────────────────────────────────────────────────── */
+
+int net_deserialize_block(const char *buf, size_t len, Block *out)
+{
+    if (!buf || len == 0 || !out) {
+        log_error("net_deserialize_block: invalid arguments");
+        return EXIT_FAILURE;
+    }
+
+    memset(out, 0, sizeof(Block));
+
+    /*
+     * Parse lines of the form "key:value\n".
+     * Both key and value buffers are bounded conservatively:
+     *   key   — at most 31 chars (all known keys are <= 12)
+     *   value — HASH_SIZE (65) bytes covers all hash strings and integers
+     */
+    const char *p   = buf;
+    const char *end = buf + len;
+
+    while (p < end) {
+        const char *nl    = memchr(p, '\n', (size_t)(end - p));
+        if (!nl) nl = end;
+
+        const char *colon = memchr(p, ':', (size_t)(nl - p));
+        if (!colon) { p = nl + 1; continue; }
+
+        size_t key_len = (size_t)(colon - p);
+        const char *val  = colon + 1;
+        size_t val_len   = (size_t)(nl - val);
+
+        char key[32];
+        if (key_len == 0 || key_len >= sizeof(key)) { p = nl + 1; continue; }
+        memcpy(key, p, key_len);
+        key[key_len] = '\0';
+
+        char value[HASH_SIZE];
+        if (val_len == 0 || val_len >= sizeof(value)) { p = nl + 1; continue; }
+        memcpy(value, val, val_len);
+        value[val_len] = '\0';
+
+        if      (strcmp(key, "index")       == 0)
+            out->index = (uint32_t)strtoul(value, NULL, 10);
+        else if (strcmp(key, "timestamp")   == 0)
+            out->timestamp = (time_t)strtol(value, NULL, 10);
+        else if (strcmp(key, "prev_hash")   == 0)
+            strncpy((char *)out->previous_hash, value,
+                    sizeof(out->previous_hash) - 1);
+        else if (strcmp(key, "merkle_root") == 0)
+            strncpy((char *)out->merkle_root, value,
+                    sizeof(out->merkle_root) - 1);
+        else if (strcmp(key, "nonce")       == 0)
+            out->nonce = (uint32_t)strtoul(value, NULL, 10);
+        else if (strcmp(key, "consensus")   == 0)
+            out->consensus = (uint8_t)strtoul(value, NULL, 10);
+        else if (strcmp(key, "hash")        == 0)
+            strncpy((char *)out->hash, value, sizeof(out->hash) - 1);
+        else if (strcmp(key, "tx_count")    == 0)
+            out->transaction_count = (uint32_t)strtoul(value, NULL, 10);
+
+        p = nl + 1;
+    }
+
+    /* Verify integrity: stored hash must match a freshly computed hash. */
+    if (block_verify_hash(out) != EXIT_SUCCESS) {
+        log_error("net_deserialize_block: hash integrity check failed");
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
+}
+
 /* ── Broadcast ────────────────────────────────────────────────────────── */
 
 int net_broadcast_block(NetContext  *ctx,
@@ -332,7 +407,7 @@ int net_broadcast_block(NetContext  *ctx,
 
 /* ── Server ───────────────────────────────────────────────────────────── */
 
-int net_server_run(NetContext *ctx)
+int net_server_run(NetContext *ctx, Chain *chain)
 {
     if (!ctx) {
         log_error("net_server_run: NULL context");
@@ -420,8 +495,22 @@ int net_server_run(NetContext *ctx)
         } else {
             buf[n] = '\0';
             log_info("Received %d bytes from %s", n, peer_ip);
-            log_debug("Block data preview: %.128s", buf);
-            /* TODO(ADR-014): deserialize buf into Block, call chain_add(). */
+
+            Block block;
+            if (net_deserialize_block(buf, (size_t)n, &block) != EXIT_SUCCESS) {
+                log_warn("net_server_run: invalid block data from %s", peer_ip);
+            } else if (chain != NULL) {
+                if (chain_add(chain, &block) == EXIT_SUCCESS) {
+                    log_info("net_server_run: block %u from %s added to chain",
+                             block.index, peer_ip);
+                } else {
+                    log_warn("net_server_run: block %u from %s rejected",
+                             block.index, peer_ip);
+                }
+            } else {
+                log_info("net_server_run: block %u received (monitor mode)",
+                         block.index);
+            }
         }
 
         tls_shutdown(ssl);

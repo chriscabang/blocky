@@ -242,6 +242,33 @@ static void test_add_pool_exhaustion(void **state) {
   block_free(b);
 }
 
+/* ── chain_propose ────────────────────────────────────────────────────── */
+
+/* NULL chain must return EXIT_FAILURE. */
+static void test_propose_null_chain(void **state) {
+  (void)state;
+  Block *b = make_next(1, NULL);
+  assert_int_equal(chain_propose(NULL, b), EXIT_FAILURE);
+  block_free(b);
+}
+
+/* NULL block must return EXIT_FAILURE. */
+static void test_propose_null_block(void **state) {
+  Chain *c = *state;
+  assert_int_equal(chain_propose(c, NULL), EXIT_FAILURE);
+}
+
+/*
+ * No .chain/peers file: propose must return EXIT_SUCCESS with zero broadcasts.
+ * This is the normal initial state — no peers configured yet.
+ */
+static void test_propose_no_peers(void **state) {
+  Chain *c = *state;
+  /* Ensure no peers file exists (teardown removes .chain, but be explicit). */
+  remove(".chain/peers");
+  assert_int_equal(chain_propose(c, c->head), EXIT_SUCCESS);
+}
+
 /* ── main ─────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -274,10 +301,17 @@ int main(void) {
     cmocka_unit_test_setup_teardown(test_add_pool_exhaustion,     setup_loaded, teardown),
   };
 
+  const struct CMUnitTest propose_tests[] = {
+    cmocka_unit_test_setup_teardown(test_propose_null_chain, setup_empty,  teardown_empty),
+    cmocka_unit_test_setup_teardown(test_propose_null_block, setup_loaded, teardown),
+    cmocka_unit_test_setup_teardown(test_propose_no_peers,   setup_loaded, teardown),
+  };
+
   int failures = 0;
   failures += cmocka_run_group_tests_name("load",     load_tests,     NULL, NULL);
   failures += cmocka_run_group_tests_name("unload",   unload_tests,   NULL, NULL);
   failures += cmocka_run_group_tests_name("validate", validate_tests, NULL, NULL);
   failures += cmocka_run_group_tests_name("add",      add_tests,      NULL, NULL);
+  failures += cmocka_run_group_tests_name("propose",  propose_tests,  NULL, NULL);
   return failures;
 }

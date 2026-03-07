@@ -348,6 +348,72 @@ static void test_serialize_distinct_blocks(void **state)
     block_free(b);
 }
 
+/* ── deserialize ──────────────────────────────────────────────────────── */
+
+/* NULL buf must return EXIT_FAILURE. */
+static void test_deserialize_null_buf(void **state)
+{
+    (void)state;
+    Block b;
+    assert_int_equal(net_deserialize_block(NULL, 64, &b), EXIT_FAILURE);
+}
+
+/* Zero length must return EXIT_FAILURE. */
+static void test_deserialize_zero_len(void **state)
+{
+    (void)state;
+    Block b;
+    assert_int_equal(net_deserialize_block("index:0\n", 0, &b), EXIT_FAILURE);
+}
+
+/* NULL output block must return EXIT_FAILURE. */
+static void test_deserialize_null_out(void **state)
+{
+    (void)state;
+    assert_int_equal(net_deserialize_block("index:0\n", 8, NULL), EXIT_FAILURE);
+}
+
+/* Garbage data must fail hash verification and return EXIT_FAILURE. */
+static void test_deserialize_garbage(void **state)
+{
+    (void)state;
+    Block b;
+    assert_int_equal(
+        net_deserialize_block("not:valid\ndata:garbage\n", 23, &b),
+        EXIT_FAILURE);
+}
+
+/*
+ * Serialize a well-formed block then deserialize it back.
+ * Key header fields must survive the round-trip and hash must verify.
+ */
+static void test_deserialize_roundtrip(void **state)
+{
+    (void)state;
+    Block *orig = block_create(7, NULL);
+    assert_non_null(orig);
+    orig->timestamp = 1700000007;
+    orig->nonce     = 42;
+    assert_int_equal(block_compute_hash(orig), EXIT_SUCCESS);
+
+    char buf[NET_BLOCK_BUF_SIZE];
+    int  n = net_serialize_block(orig, buf, sizeof(buf));
+    assert_true(n > 0);
+
+    Block result;
+    assert_int_equal(net_deserialize_block(buf, (size_t)n, &result),
+                     EXIT_SUCCESS);
+
+    assert_int_equal((int)result.index, (int)orig->index);
+    assert_int_equal((long)result.timestamp, (long)orig->timestamp);
+    assert_int_equal((int)result.nonce, (int)orig->nonce);
+    assert_string_equal((char *)result.hash, (char *)orig->hash);
+    assert_string_equal((char *)result.previous_hash,
+                        (char *)orig->previous_hash);
+
+    block_free(orig);
+}
+
 /* ── broadcast (argument validation only — no live network) ───────────── */
 
 /* NULL context must return -1. */
@@ -467,6 +533,19 @@ int main(void)
                                         setup_none, teardown_none),
     };
 
+    const struct CMUnitTest deserialize_tests[] = {
+        cmocka_unit_test_setup_teardown(test_deserialize_null_buf,
+                                        setup_none, teardown_none),
+        cmocka_unit_test_setup_teardown(test_deserialize_zero_len,
+                                        setup_none, teardown_none),
+        cmocka_unit_test_setup_teardown(test_deserialize_null_out,
+                                        setup_none, teardown_none),
+        cmocka_unit_test_setup_teardown(test_deserialize_garbage,
+                                        setup_none, teardown_none),
+        cmocka_unit_test_setup_teardown(test_deserialize_roundtrip,
+                                        setup_none, teardown_none),
+    };
+
     const struct CMUnitTest broadcast_tests[] = {
         cmocka_unit_test_setup_teardown(test_broadcast_null_ctx,
                                         setup_none,  teardown_none),
@@ -480,12 +559,14 @@ int main(void)
 
     int failures = 0;
     failures += cmocka_run_group_tests_name("network/context/server",
-                                            server_tests,    NULL, NULL);
+                                            server_tests,      NULL, NULL);
     failures += cmocka_run_group_tests_name("network/context/client",
-                                            client_tests,    NULL, NULL);
+                                            client_tests,      NULL, NULL);
     failures += cmocka_run_group_tests_name("network/serialize",
-                                            serialize_tests, NULL, NULL);
+                                            serialize_tests,   NULL, NULL);
+    failures += cmocka_run_group_tests_name("network/deserialize",
+                                            deserialize_tests, NULL, NULL);
     failures += cmocka_run_group_tests_name("network/broadcast",
-                                            broadcast_tests, NULL, NULL);
+                                            broadcast_tests,   NULL, NULL);
     return failures;
 }

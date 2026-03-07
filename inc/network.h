@@ -26,6 +26,7 @@
 #include <stdint.h>
 
 #include "block.h"
+#include "chain.h"
 
 /* ── Constants ────────────────────────────────────────────────────────── */
 
@@ -98,6 +99,16 @@ void net_context_free(NetContext *ctx);
  */
 int net_serialize_block(const Block *block, char *buf, size_t bufsz);
 
+/*
+ * Deserialize a block header from a NUL-terminated buffer received over the
+ * network (the inverse of net_serialize_block).
+ * Writes fields into out, then calls block_verify_hash to confirm integrity.
+ * Returns EXIT_SUCCESS on success, EXIT_FAILURE if arguments are invalid or
+ * hash verification fails.
+ * Note: only header fields are populated; out->transactions is zeroed.
+ */
+int net_deserialize_block(const char *buf, size_t len, Block *out);
+
 /* ── Broadcast ────────────────────────────────────────────────────────── */
 
 /*
@@ -115,8 +126,12 @@ int net_broadcast_block(NetContext       *ctx,
  * Bind to cfg->port and run the blocking accept loop.
  * Handles one connection at a time (single-threaded; appropriate for
  * Raspberry Pi / low-concurrency nodes — see ADR-014).
+ *
+ * chain: if non-NULL, received blocks are deserialized and added to the chain
+ *        via chain_validate + chain_add.  Pass NULL for log-only/monitor mode.
+ *
  * Returns -1 on a fatal socket or TLS setup error.
  */
-int net_server_run(NetContext *ctx);
+int net_server_run(NetContext *ctx, Chain *chain);
 
 #endif /* NETWORK_H */

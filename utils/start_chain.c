@@ -1,6 +1,6 @@
-/* startchain.c — Demo: start a TLS P2P listener node.
+/* start_chain.c — Demo: start a TLS P2P listener node.
  *
- * Usage: startchain <port> <cert.pem> <key.pem> [ca.pem]
+ * Usage: start_chain <port> <cert.pem> <key.pem> [ca.pem]
  *
  *   port        TCP port to bind (e.g. 8333)
  *   cert.pem    Server certificate (PEM)
@@ -9,8 +9,8 @@
  *
  * Binds to all interfaces on the given port and enters the accept loop.
  * Each incoming connection is expected to carry a serialized block header
- * (see net_serialize_block).  Received data is logged; chain integration
- * is pending (ADR-014 TODO: deserialize + chain_add).
+ * (see net_serialize_block). Received blocks are deserialized, validated,
+ * and added to the local chain via chain_add.
  *
  * To enable PQC hybrid key exchange, set pqc_group to NET_PQC_GROUP once
  * all peers have the OQS OpenSSL provider loaded.
@@ -21,13 +21,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "chain.h"
 #include "network.h"
 
 int main(int argc, char *argv[])
 {
     if (argc < 4 || argc > 5) {
         fprintf(stderr,
-                "usage: startchain <port> <cert.pem> <key.pem> [ca.pem]\n");
+                "usage: start_chain <port> <cert.pem> <key.pem> [ca.pem]\n");
         return 1;
     }
 
@@ -51,10 +52,19 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    Chain *chain = chain_load();
+    if (!chain) {
+        fprintf(stderr, "error: failed to load chain\n");
+        net_context_free(ctx);
+        return 1;
+    }
+
     printf("[node]   TLS server starting on port %u\n", port);
+    printf("[node]   Chain tip: block #%u\n", chain->head->index);
     printf("[node]   Press Ctrl-C to stop.\n");
 
-    int rc = net_server_run(ctx);
+    int rc = net_server_run(ctx, chain);
+    chain_unload(chain);
     net_context_free(ctx);
     return (rc == 0) ? 0 : 1;
 }
