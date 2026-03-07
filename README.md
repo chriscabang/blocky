@@ -1,4 +1,4 @@
-# QuteChain
+# bloc
 
 A lightweight, post-quantum secure blockchain written in C, designed to run on
 **Raspberry Pi** and other embedded devices. The workflow is modeled after git:
@@ -43,7 +43,7 @@ stage transactions, commit a mined block, propose it to peers.
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                   blocky CLI                    │  main.c — git-like subcommands
+│                   bloc CLI                    │  main.c — git-like subcommands
 └──────────────────────┬──────────────────────────┘
                        │
           ┌────────────┼────────────┐
@@ -107,7 +107,7 @@ sudo apt install build-essential libssl-dev libcmocka-dev
 liboqs is built in-tree alongside the project:
 
 ```sh
-# from the parent of your blocky checkout
+# from the parent of your bloc checkout
 mkdir -p libs && cd libs
 git clone --depth 1 https://github.com/open-quantum-safe/liboqs.git
 cd liboqs
@@ -127,8 +127,8 @@ project root.
 make all
 
 # Outputs:
-#   build/blocky           — optimized release binary
-#   build/blocky-debug     — debug binary (-g -DDEBUG)
+#   build/bloc           — optimized release binary
+#   build/bloc-debug     — debug binary (-g -DDEBUG)
 #   build/utils/           — demo utility binaries
 ```
 
@@ -148,17 +148,17 @@ make help       # List all targets
 
 ```sh
 # 1. Initialize the chain (creates genesis block)
-./build/blocky init
+./build/bloc init
 
 # 2. Stage a transaction
-./build/blocky send --from alice --to bob --amount 10.5
+./build/bloc send --from alice --to bob --amount 10.5
 
 # 3. Mine a block containing the staged transactions
-./build/blocky commit
+./build/bloc commit
 
 # 4. Check the chain
-./build/blocky log
-./build/blocky status
+./build/bloc log
+./build/bloc status
 ```
 
 ---
@@ -166,7 +166,7 @@ make help       # List all targets
 ## CLI Reference
 
 ```
-Usage: blocky <command> [options]
+Usage: bloc <command> [options]
 
 Commands:
   init                             Initialise chain (creates genesis block)
@@ -193,34 +193,34 @@ arithmetic in the core.
 
 ### 1. Exchanging Money
 
-QuteChain uses a **stage-then-commit** workflow. Transactions are staged in
+bloc uses a **stage-then-commit** workflow. Transactions are staged in
 `.chain/STAGED` (a plain text file) and sealed into a block on `commit`.
 
 ```sh
 # Initialize the chain if starting fresh
-./build/blocky init
+./build/bloc init
 # Initialised chain at .chain/
 # Tip: block #0 (a3f8c2...)
 
 # Stage one transaction
-./build/blocky send --from alice --to bob --amount 25.0
+./build/bloc send --from alice --to bob --amount 25.0
 # Staged: alice -> bob  25.000000
 
 # Stage a second transaction in the same block
-./build/blocky send --from carol --to dave --amount 7.5
+./build/bloc send --from carol --to dave --amount 7.5
 # Staged: carol -> dave  7.500000
 
 # Check what is pending
-./build/blocky status
+./build/bloc status
 # Chain tip:  block #0 (a3f8c2d1...)
 # Staged:     2 transaction(s) pending
 
 # Commit: mines a PoW block and appends it to the chain
-./build/blocky commit
+./build/bloc commit
 # Committed block #1 (0000e4f2...)
 
 # Confirm
-./build/blocky log
+./build/bloc log
 # block #1    0000e4f2...  ts=1700001234  txns=2
 # block #0    a3f8c2d1...  ts=1700000000  txns=0
 ```
@@ -260,7 +260,7 @@ chmod 600 alice.key
 
 ### 2. Mining a Block
 
-`blocky commit` mines automatically. For standalone PoW mining:
+`bloc commit` mines automatically. For standalone PoW mining:
 
 ```sh
 # Mine an empty block at default difficulty (4 leading hex zeros)
@@ -291,7 +291,7 @@ re-hashes the nonce on each iteration.
 #### Verify hash integrity of a specific block
 
 ```sh
-./build/blocky verify 0000e4f2c9a3b1d8e7f600000000000000000000000000000000000000001234
+./build/bloc verify 0000e4f2c9a3b1d8e7f600000000000000000000000000000000000000001234
 # OK    0000e4f2c9a3...
 ```
 
@@ -301,7 +301,7 @@ Returns exit code `0` for valid, `2` for tampered or not found.
 
 ```sh
 # Formatted view
-./build/blocky show <hash>
+./build/bloc show <hash>
 # block #1
 #   hash:      0000e4f2...
 #   prev:      a3f8c2d1...
@@ -314,17 +314,17 @@ Returns exit code `0` for valid, `2` for tampered or not found.
 #     [1] carol -> dave  7.500000
 
 # Raw field dump (machine-readable)
-./build/blocky cat <hash>
+./build/bloc cat <hash>
 ```
 
 #### Inspect the full chain
 
 ```sh
 # List most recent 10 blocks
-./build/blocky log
+./build/bloc log
 
 # List most recent 25 blocks
-./build/blocky log --limit 25
+./build/bloc log --limit 25
 
 # Inspect via utility (with page size)
 ./build/utils/inspect_chain       # last 10 blocks
@@ -374,7 +374,7 @@ With optional mutual TLS (verify connecting peers against a CA):
 
 ```sh
 # Using the CLI (reads .chain/peers for peer list)
-./build/blocky propose
+./build/bloc propose
 # Proposed block #3 (0000a1b2...)
 
 # Using the utility (direct peer address)
@@ -409,22 +409,22 @@ EOF
 
 ```sh
 # Start fresh
-./build/blocky init
+./build/bloc init
 echo "192.168.1.20:8333" > .chain/peers
 
 # Start TLS listener in background
 ./build/utils/start_chain 8333 node.crt node.key &
 
 # Mine a block and broadcast it
-./build/blocky send --from alice --to bob --amount 10
-./build/blocky commit
-./build/blocky propose
+./build/bloc send --from alice --to bob --amount 10
+./build/bloc commit
+./build/bloc propose
 ```
 
 **Node B** (192.168.1.20) — starts its own chain:
 
 ```sh
-./build/blocky init
+./build/bloc init
 echo "192.168.1.10:8333" > .chain/peers
 ./build/utils/start_chain 8333 node.crt node.key
 # Receives the block broadcast by Node A, validates, and appends it
@@ -433,9 +433,9 @@ echo "192.168.1.10:8333" > .chain/peers
 #### systemd service (Raspberry Pi)
 
 ```ini
-# /etc/systemd/system/blocky.service
+# /etc/systemd/system/bloc.service
 [Unit]
-Description=QuteChain P2P node
+Description=bloc P2P node
 After=network-online.target
 Wants=network-online.target
 
@@ -445,15 +445,15 @@ WorkingDirectory=/mnt/ssd/chain
 ExecStart=/usr/local/bin/start_chain 8333 tls-cert.pem tls-key.pem
 Restart=on-failure
 RestartSec=5
-User=blocky
+User=bloc
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```sh
-sudo systemctl enable --now blocky
-sudo journalctl -u blocky -f    # follow logs
+sudo systemctl enable --now bloc
+sudo journalctl -u bloc -f    # follow logs
 ```
 
 > **Storage note:** Always run the chain on a **USB SSD**, never on the
@@ -513,7 +513,7 @@ Example output:
 ## Project Layout
 
 ```
-blocky/
+bloc/
 ├── src/                    C source files
 │   ├── main.c              CLI dispatcher (init, send, commit, propose, …)
 │   ├── chain.c             In-memory chain with pool allocator

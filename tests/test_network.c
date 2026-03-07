@@ -80,7 +80,7 @@ static int write_test_cert(const char *cert_path, const char *key_path)
 
     name = X509_get_subject_name(x509);
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                               (const unsigned char *)"blocky-test",
+                               (const unsigned char *)"bloc-test",
                                -1, -1, 0);
     if (X509_set_issuer_name(x509, name) != 1) goto out;
     if (!X509_sign(x509, pkey, EVP_sha256())) goto out;
@@ -171,8 +171,8 @@ static void test_server_missing_cert_file(void **state)
 {
     (void)state;
     NetConfig cfg = {
-        .cert_file = "/tmp/nonexistent_cert_blocky.pem",
-        .key_file  = "/tmp/nonexistent_key_blocky.pem",
+        .cert_file = "/tmp/nonexistent_cert_bloc.pem",
+        .key_file  = "/tmp/nonexistent_key_bloc.pem",
         .port      = 4433,
     };
     assert_null(net_context_server(&cfg));
@@ -239,7 +239,7 @@ static void test_client_missing_ca_file(void **state)
     NetConfig cfg = {
         .cert_file = NULL,
         .key_file  = NULL,
-        .ca_file   = "/tmp/nonexistent_ca_blocky.pem",
+        .ca_file   = "/tmp/nonexistent_ca_bloc.pem",
         .pqc_group = NULL,
         .port      = 4433,
     };

@@ -1,8 +1,8 @@
 /**
  * @file test_main.c
- * @brief CLI integration tests for blocky.
+ * @brief CLI integration tests for bloc.
  *
- * Each test spawns ./build/blocky-debug as a child process via popen(),
+ * Each test spawns ./build/bloc-debug as a child process via popen(),
  * captures stdout, and asserts on output content and exit code.
  * stderr is suppressed so log_* noise does not pollute test output.
  *
@@ -28,12 +28,12 @@
 #include <string.h>
 #include <sys/wait.h>
 
-#define BLOCKY "./build/blocky-debug"
+#define BLOCKY "./build/bloc-debug"
 
 /* ── helpers ──────────────────────────────────────────────────────────── */
 
 /**
- * Run blocky with the given argument string, capture stdout into buf
+ * Run bloc with the given argument string, capture stdout into buf
  * (stderr is suppressed), and return the exit code.
  */
 static int run(const char *args, char *buf, size_t bufsz)
@@ -109,7 +109,7 @@ static void test_version(void **state)
   (void)state;
   char out[64];
   assert_int_equal(run("version", out, sizeof(out)), 0);
-  assert_non_null(strstr(out, "blocky"));
+  assert_non_null(strstr(out, "bloc"));
 }
 
 static void test_help(void **state)

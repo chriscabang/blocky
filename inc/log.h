@@ -36,9 +36,9 @@
  * Remote monitoring
  * ─────────────────
  * Use log_set_stream() to redirect output to a named pipe (FIFO):
- *   mkfifo /tmp/blocky.log
- *   // in code:  log_set_stream(fopen("/tmp/blocky.log", "w"));
- *   // shell:    cat /tmp/blocky.log | ssh user@monitor ...
+ *   mkfifo /tmp/bloc.log
+ *   // in code:  log_set_stream(fopen("/tmp/bloc.log", "w"));
+ *   // shell:    cat /tmp/bloc.log | ssh user@monitor ...
  * A dedicated TCP/UDP logging port is NOT recommended: it exposes real-time
  * mining state (nonce trajectory, block solve timing) to unauthenticated
  * network observers, enabling timing attacks and selfish-mining intelligence.
