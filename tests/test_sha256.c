@@ -92,7 +92,7 @@ static void test_nist_empty(void **state)
 }
 
 /*
- * Vector 2: SHA-256("abc") = ba7816bf8f01cfea414140de5dae2ec7...
+ * Vector 2: SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223...
  * FIPS 180-4 Appendix B.1.
  */
 static void test_nist_abc(void **state)
