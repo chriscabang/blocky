@@ -2,9 +2,9 @@
 
 **zuno** — *Zero-trust Unalterable Notarized Object-store*
 
-Named after Zuno, the omniscient being from *Dragon Ball Super* who holds the
-answer to every question ever asked. A blockchain is the same: an immutable,
-tamper-proof record of all truth — nothing forgotten, nothing alterable.
+A lightweight, post-quantum secure blockchain written in C, designed to run on
+**Raspberry Pi** and other embedded devices. The workflow is modeled after git:
+stage transactions, commit a mined block, propose it to peers.
 
 | Word | Property |
 |---|---|
@@ -13,9 +13,9 @@ tamper-proof record of all truth — nothing forgotten, nothing alterable.
 | **Notarized** | Dilithium-3 post-quantum signatures on transactions and blocks |
 | **Object-store** | Git-style `.chain/blocks/` content-addressed storage, one file per hash |
 
-A lightweight, post-quantum secure blockchain written in C, designed to run on
-**Raspberry Pi** and other embedded devices. The workflow is modeled after git:
-stage transactions, commit a mined block, propose it to peers.
+Named after Zuno, the omniscient being from *Dragon Ball Super* who holds the
+answer to every question ever asked. A blockchain is the same: an immutable,
+tamper-proof record of all truth — nothing forgotten, nothing alterable.
 
 ---
 
