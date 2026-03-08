@@ -110,7 +110,7 @@ static void test_select_empty_pool_fails(void **state) {
     (void)state;
     PoSSystem pos;
     pos_init(&pos);
-    Validator v;
+    PosEntry v;
     assert_int_equal(pos_select_validator(&pos, &v), EXIT_FAILURE);
 }
 
@@ -128,7 +128,7 @@ static void test_select_single_always_chosen(void **state) {
 
     /* Call multiple times to confirm determinism regardless of rand state. */
     for (int i = 0; i < 5; i++) {
-        Validator v;
+        PosEntry v;
         assert_int_equal(pos_select_validator(&pos, &v), EXIT_SUCCESS);
         assert_int_equal((int)v.id, 42);
     }
@@ -141,7 +141,7 @@ static void test_select_correct_id(void **state) {
     pos_init(&pos);
     pos_stake(&pos, 7, 500);
 
-    Validator v;
+    PosEntry v;
     assert_int_equal(pos_select_validator(&pos, &v), EXIT_SUCCESS);
     assert_int_equal((int)v.id, 7);
 }
@@ -158,7 +158,7 @@ static void test_select_from_multiple(void **state) {
     pos_stake(&pos, 100, 500);
     pos_stake(&pos, 200, 500);
 
-    Validator v;
+    PosEntry v;
     assert_int_equal(pos_select_validator(&pos, &v), EXIT_SUCCESS);
     assert_true(v.id == 100 || v.id == 200);
 }
@@ -174,7 +174,7 @@ static void test_validate_pos_divisible_index(void **state) {
     assert_non_null(b);
     b->index = 10;
 
-    Validator v = {.id = 1, .stake = 1000};
+    PosEntry v = {.id = 1, .stake = 1000};
     assert_int_equal(pos_validate_block(b, &v), EXIT_SUCCESS);
 
     *state = b;
@@ -186,7 +186,7 @@ static void test_validate_pos_non_divisible_index(void **state) {
     assert_non_null(b);
     b->index = 7;
 
-    Validator v = {.id = 1, .stake = 1000};
+    PosEntry v = {.id = 1, .stake = 1000};
     assert_int_equal(pos_validate_block(b, &v), EXIT_FAILURE);
 
     *state = b;
@@ -198,7 +198,7 @@ static void test_validate_pos_genesis_index(void **state) {
     assert_non_null(b);
     /* index is already 0 from block_create */
 
-    Validator v = {.id = 2, .stake = 500};
+    PosEntry v = {.id = 2, .stake = 500};
     assert_int_equal(pos_validate_block(b, &v), EXIT_SUCCESS);
 
     *state = b;

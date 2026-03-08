@@ -68,9 +68,18 @@ static int verify_pos_rules(const Block *block) {
         }
     }
 
-    /* TODO (ADR-003): verify VRF proof — proposer must hold the slot token. */
-    /* TODO (ADR-003): verify Dilithium-3 block signature via
-     *                 verify_block_signature(block). */
+    /*
+     * TODO (ADR-003 phase 2): verify VRF proof and Dilithium-3 block signature.
+     *
+     * vrf.h / vrf.c are implemented and unit-tested.  Integration here requires
+     * the Block struct to carry a VRFProof field (proposer slot commitment) and
+     * a proposer_id field — both pending the ADR-003 Block extension.
+     *
+     * When available:
+     *   vrf_verify(proposer_id, slot_msg, &block->vrf_proof,
+     *              proposer_pk, pk_len, stake, total_stake);
+     *   verify_block_signature(block);   — Dilithium-3 over block fields
+     */
 
     return EXIT_SUCCESS;
 }

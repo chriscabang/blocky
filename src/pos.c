@@ -33,7 +33,7 @@ void pos_stake(PoSSystem *pos, uint32_t validator_id, uint64_t amount) {
     pos->validator_count++;
 }
 
-int pos_select_validator(const PoSSystem *pos, Validator *out) {
+int pos_select_validator(const PoSSystem *pos, PosEntry *out) {
     if (!pos || !out) {
         log_error("pos_select_validator: NULL argument");
         return EXIT_FAILURE;
@@ -74,7 +74,7 @@ int pos_select_validator(const PoSSystem *pos, Validator *out) {
     return EXIT_SUCCESS;
 }
 
-int pos_validate_block(const Block *block, const Validator *validator) {
+int pos_validate_block(const Block *block, const PosEntry *validator) {
     if (!block || !validator) {
         log_error("pos_validate_block: NULL argument");
         return EXIT_FAILURE;

@@ -45,6 +45,8 @@ The git log is the record of *what* changed; this file is the record of *why*.
   - [ADR-014 Network Module — TLS Security, SOLID Rewrite](#adr-014-network-module--tls-security-solid-rewrite)
   - [ADR-015 Dead Code Removal — iterator.h and common.h](#adr-015-dead-code-removal--iteratorh-and-commonh)
   - [ADR-016 Deployment — Raspberry Pi + USB SSD, Native systemd](#adr-016-deployment--raspberry-pi--usb-ssd-native-systemd)
+  - [ADR-017 Validator Registry — Identity, Stake, Disk Persistence](#adr-017-validator-registry--identity-stake-disk-persistence)
+  - [ADR-018 VRF Leader Selection — Slot-Based, Stake-Weighted, Dilithium-3 Proven](#adr-018-vrf-leader-selection--slot-based-stake-weighted-dilithium-3-proven)
 - [Part IV — Pending Work](#part-iv--pending-work)
 
 ---
@@ -1670,6 +1672,119 @@ If the registry cannot be loaded, the stake check is skipped with a `log_warn`
 
 ---
 
+### ADR-018 VRF Leader Selection — Slot-Based, Stake-Weighted, Dilithium-3 Proven
+
+**Status:** Implemented (`src/vrf.c`, `inc/vrf.h`, `tests/test_vrf.c`).
+Integration into `verify_pos_rules()` pending Block struct extension (ADR-003
+phase 2).
+
+#### Context
+
+ADR-003 requires that PoS block proposers be elected through a Verifiable
+Random Function (VRF), not through plain random selection (`rand()`). The VRF
+must be:
+
+1. **Deterministic** — the same validator produces the same output for a given
+   slot.
+2. **Verifiable** — any peer can check the output without the private key.
+3. **Unpredictable** — other validators cannot predict who will be elected
+   before the proof is revealed.
+4. **Post-quantum secure** — proofs must resist Grover/Shor attacks (Dilithium-3).
+
+The existing `pos.c` used `rand()` with a comment marking it for replacement.
+
+#### Decision
+
+A dedicated `vrf.c` module implements the VRF construction using SHA-256
+(already available via `sha256.h`) and Dilithium-3 signatures (`liboqs`).
+`pos.h`'s conflicting `Validator` typedef was renamed to `PosEntry` to prevent
+ambiguity with `validator.h`'s full `Validator` struct.
+
+#### Construction
+
+```
+slot_message   = SHA-256(slot_le64 || prev_block_hash[32])
+selection_hash = SHA-256(validator_id || slot_message[32])
+is_elected     = (selection_hash_u64be % total_stake) < validator_stake
+proof.sig      = Dilithium-3_sign(slot_message, private_key)
+proof.output   = selection_hash
+```
+
+**Slot message** is the public, globally-computable commitment for a slot.
+All validators hash the same slot number and previous block hash — producing a
+unique challenge per slot.
+
+**Selection hash** binds the slot message to a specific validator's identity.
+It is deterministic (same validator + same slot → same hash) and private before
+the proof is revealed (other validators cannot predict the value without knowing
+the private key).
+
+**Election test** maps the selection hash onto the stake distribution using
+modular arithmetic. A validator with a larger fraction of total stake wins more
+slots in expectation, matching the proportional fairness property.
+
+**Proof** is a Dilithium-3 signature over the slot message. It proves the
+validator holding that private key committed to this slot and cannot be forged
+or reused across slots.
+
+#### Verification (three-step)
+
+1. `OQS_SIG_verify(slot_message, proof.sig, public_key)` — signature integrity.
+2. `SHA-256(validator_id || slot_message) == proof.output` — output binding.
+3. `(output_u64be % total_stake) < validator_stake` — election eligibility.
+
+Any failure causes `vrf_verify()` to return `EXIT_FAILURE` with a `log_warn`.
+
+#### API
+
+| Function | Description |
+|---|---|
+| `vrf_slot_message(slot, prev_hash, out)` | Compute public slot commitment |
+| `vrf_selection_hash(id, slot_msg, out)` | Compute validator-specific election ticket |
+| `vrf_is_elected(hash, stake, total)` | Election test (no division by zero on `total=0`) |
+| `vrf_prove(id, slot_msg, sk, sk_len, proof)` | Sign and fill `VRFProof` |
+| `vrf_verify(id, slot_msg, proof, pk, pk_len, stake, total)` | Three-step verify |
+
+#### Integration status
+
+`vrf.h` and `vrf.c` are complete and unit-tested. Wiring `vrf_verify()` into
+`verify_pos_rules()` in `consensus.c` requires:
+
+- A `VRFProof vrf_proof` field in `Block` (proposer slot commitment on-chain).
+- A `char proposer_id[VALIDATOR_ID_SIZE]` field in `Block` (or derive from
+  `transactions[0].sender` as a temporary approximation).
+
+Both changes are tracked under ADR-003 phase 2.
+
+#### Renamed: `Validator` → `PosEntry` in `pos.h`
+
+`pos.h` previously defined `typedef struct { uint32_t id; uint64_t stake; }
+Validator;` which clashed with `validator.h`'s full `Validator` struct (string
+ID, Dilithium-3 public key, `uint64_t` stake). The lightweight PoS registry
+type was renamed to `PosEntry` across `pos.h`, `pos.c`, and `test_pos.c`.
+
+#### SOLID mapping
+
+| Principle | Application |
+|---|---|
+| SRP | `vrf.c` owns only slot commitment and proof; stake bookkeeping stays in `validator.c` |
+| OCP | Adding new VRF algorithms (e.g. XMSS-VRF) means adding a new module, not modifying `vrf.c` |
+| DIP | `consensus.c` will call `vrf_verify()` (the abstraction); the Dilithium-3 detail stays inside `vrf.c` |
+
+#### Tests
+
+17 tests in `tests/test_vrf.c` across 5 groups:
+
+| Group | Tests | What is covered |
+|---|---|---|
+| `vrf/slot_message` | 3 | Determinism, distinct slots, NULL guard |
+| `vrf/selection_hash` | 3 | Determinism, distinct IDs produce distinct hashes, NULL guard |
+| `vrf/is_elected` | 3 | Zero-total guard (no div-by-zero), guaranteed election, zero-stake |
+| `vrf/prove` | 3 | NULL id/slot_msg, valid key pair produces non-zero sig |
+| `vrf/verify` | 5 | NULL args, round-trip, tampered sig, wrong validator, unelected |
+
+---
+
 ## Part IV — Pending Work
 
 Items that are designed (ADR adopted) but not yet implemented:
@@ -1678,8 +1793,7 @@ Items that are designed (ADR adopted) but not yet implemented:
 
 | Work Item | ADR | Location |
 |---|---|---|
-| VRF leader selection | ADR-003 | Build from PQC primitives; Algorand VRF is a reference |
-| Dilithium-3 block signatures | ADR-003 | Wire `verify_block_signature()` in `consensus.c` to key registry |
+| Dilithium-3 block signatures | ADR-003 | Wire `verify_block_signature()` and `vrf_verify()` into `consensus.c`; requires Block struct extension (proposer_id + VRFProof fields) |
 
 ### Medium Priority
 

@@ -19,11 +19,11 @@
 typedef struct {
     uint32_t id;      /* unique validator identifier */
     uint64_t stake;   /* registered stake amount in micro-units */
-} Validator;
+} PosEntry;
 
 typedef struct {
-    Validator validators[MAX_VALIDATORS];
-    int       validator_count;
+    PosEntry validators[MAX_VALIDATORS];
+    int      validator_count;
 } PoSSystem;
 
 /*
@@ -53,7 +53,7 @@ void pos_stake(PoSSystem *pos, uint32_t validator_id, uint64_t amount);
  *
  * Returns EXIT_SUCCESS on success.
  */
-int pos_select_validator(const PoSSystem *pos, Validator *out);
+int pos_select_validator(const PoSSystem *pos, PosEntry *out);
 
 /*
  * Validate a block under PoS rules.
@@ -63,6 +63,6 @@ int pos_select_validator(const PoSSystem *pos, Validator *out);
  *
  * Returns EXIT_SUCCESS if the block passes, EXIT_FAILURE otherwise.
  */
-int pos_validate_block(const Block *block, const Validator *validator);
+int pos_validate_block(const Block *block, const PosEntry *validator);
 
 #endif /* POS_H */
