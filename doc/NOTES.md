@@ -1058,18 +1058,56 @@ Replaces `SWITCH_INTERVAL`, `ProofOf`, and `ConsensusType` (all removed).
 `verify_pow_rules()` delegates to `validate_block_pow(block, DIFFICULTY)`,
 which checks both the leading-zero difficulty target and `block_verify_hash()`.
 
-#### Decision — PoS Rules (with Security Stubs)
+#### Decision — PoS Rules
 
-`verify_pos_rules()` enforces the full ADR-003 pipeline:
+`verify_pos_rules()` enforces the full ADR-003 pipeline in order:
 
 ```c
-/* 1. Hash integrity */
-/* 2. Proposer: registry lookup + stake check */
-/* 3. VRF proof: proposer was elected for this slot */
-/* 4. Dilithium-3 block signature: proposer endorsed this specific block */
+/* 1. Hash integrity                                      (block_verify_hash) */
+/* 2a. Proposer: registry lookup + stake check           (validator_check_stake) */
+/* 2b. Equivocation guard: reject duplicate slot commit  (equivocation_check) */
+/* 2c. VRF proof: proposer was elected for this slot     (vrf_verify) */
+/* 2d. Dilithium-3 block signature: proposer endorsement (block_verify_sig) */
 ```
 
-These stubs are present and accounted for — not silent omissions.
+Each step is a separate, independently testable concern.
+
+#### Decision — Equivocation Guard
+
+**Problem:** A malicious or faulty PoS proposer could submit two different blocks
+for the same slot index, creating an ambiguous chain state.
+
+**Solution:** Track the last committed slot per proposer on disk.
+
+```
+.chain/slots/<proposer_id>   — binary uint32_t: last committed slot number
+```
+
+**Module:** `inc/equivocation.h` + `src/equivocation.c`
+
+```c
+/* Called by verify_pos_rules() — read-only, no side effects. */
+int equivocation_check(const char *proposer_id, uint32_t slot);
+
+/* Called by chain_add() after a PoS block is committed — writes record. */
+int equivocation_record(const char *proposer_id, uint32_t slot);
+```
+
+**Integration points:**
+
+| Call site | Function | When |
+|---|---|---|
+| `verify_pos_rules()` in `consensus.c` | `equivocation_check()` | Before accepting a block — reject if slot already committed |
+| `chain_add()` in `chain.c` | `equivocation_record()` | After successful storage commit — record the slot |
+
+**Failure semantics:** `equivocation_record()` failure is non-fatal — the block
+is already on disk. The failure is logged at WARN level but does not roll back.
+
+**Overwrite semantics:** `equivocation_record()` always overwrites — it stores
+the most recent committed slot, not a history. A proposer who commits slot 5,
+then slot 7, is no longer guarded against a duplicate slot 5 commitment. This
+is intentional: the guard targets same-slot equivocation within a continuous
+forward progression, not replay across chain reorgs.
 
 #### Decision — Wire into chain_validate
 
@@ -1097,17 +1135,25 @@ if (verify_consensus(block) != EXIT_SUCCESS) {
 
 1. VRF leader election — slot token proof verification via `vrf_verify()`
 2. Dilithium-3 block signatures — `block_sign()` / `block_verify_sig()` in `src/block.c`
-3. Stake threshold — minimum stake before a validator can propose
-4. Equivocation guard — prevent proposing two blocks for the same slot
+3. Stake threshold — `validator_check_stake()` enforced in step 2a of `verify_pos_rules()`
+4. Equivocation guard — `equivocation_check()` enforced in step 2b of `verify_pos_rules()`;
+   `equivocation_record()` called in `chain_add()` after commit (see Equivocation Guard section above)
 
 #### Test Coverage
 
-8 tests in `test_consensus.c`:
+12 tests in `test_consensus.c`:
 
 | Group | Tests |
 |---|---|
 | `consensus/verify_consensus` | NULL block, PoW mined pass, PoW unmined fail, PoW tampered nonce fail, PoS valid hash pass, PoS tampered hash fail, unknown type=2 fail |
 | `consensus/verify_block_signature` | stub always returns EXIT_FAILURE |
+
+10 tests in `test_equivocation.c`:
+
+| Group | Tests |
+|---|---|
+| `equivocation/check` | NULL proposer, empty proposer, no record (first proposal allowed), same slot rejected, different slot allowed |
+| `equivocation/record` | NULL proposer, empty proposer, creates slot file, overwrites previous record, multiple proposers are independent |
 
 ---
 
@@ -1231,9 +1277,43 @@ Three consecutive mines complete in under one second on any modern CPU.
 - Tampering any **header field** (including `merkle_root`) after mining: detected
 - Tampering a **transaction field** after `compute_merkle_root` but before
   `chain_add`: detected (Merkle root covers all tx fields)
-- Tampering a transaction field **after** `chain_add` in the stored copy: not
-  detected by `block_verify_hash` alone — full Merkle re-verification is
-  pending future work
+- Tampering a transaction field **after** `chain_add` in the stored copy:
+  detected by **full Merkle re-verification on read** (see below)
+
+#### Decision — Full Merkle Re-verification on Read
+
+Both `storage_read()` and `storage_read_into()` now verify transaction integrity
+after every `fread()`:
+
+```c
+/* skip for empty blocks — genesis has all-zero merkle_root, not "0" */
+if (block->transaction_count > 0) {
+    char recomputed[HASH_SIZE];
+    compute_merkle_root(block, recomputed);
+    if (strncmp(recomputed, (char *)block->merkle_root, HASH_SIZE - 1) != 0) {
+        log_error("storage_read: Merkle root mismatch for block %s", hash);
+        return NULL;  /* or EXIT_FAILURE for storage_read_into */
+    }
+}
+```
+
+**Why skip `transaction_count == 0`:**
+The genesis block is stored with `merkle_root` all-zero (from `calloc`), while
+`compute_merkle_root()` would return the string `"0"` for an empty block —
+these never match. Skipping empty blocks avoids a false rejection on genesis
+and any PoW block with no transactions.
+
+**`compute_merkle_root()` fields hashed per transaction:**
+`sender` + `recipient` + `amount` (raw bytes) + `nonce` (raw bytes), consistent
+with ADR-009.
+
+**Test additions** (`test_storage.c`, `read/merkle` group, 3 tests):
+
+| Test | Scenario |
+|---|---|
+| `test_read_merkle_valid` | Block with tx, correct merkle_root set → `storage_read` succeeds |
+| `test_read_merkle_mismatch` | Block with tx, merkle_root left all-zero → `storage_read` returns NULL |
+| `test_read_into_merkle_mismatch` | Same for `storage_read_into` → returns `EXIT_FAILURE` |
 
 #### Test Coverage
 
@@ -1400,6 +1480,47 @@ before the receiving peer has validated the block header.
 time — appropriate for Raspberry Pi / low-concurrency nodes. Threading can be
 added later without changing the API.
 
+#### Decision — GETBODY Protocol (Transaction Body Fetch-on-Demand)
+
+**Problem:** Broadcasting full blocks (with Dilithium-3 signatures per
+transaction) is expensive and transmits unvalidated key material before the
+receiving peer has accepted the header.
+
+**Solution:** Two-phase propagation within a single TLS connection.
+
+```
+Broadcaster (sender)                    Server (receiver)
+─────────────────────                   ─────────────────
+SSL_write(serialized header)    ──────►
+                                        deserialize + block_verify_hash
+                                        if tx_count > 0:
+                                ◄──────     SSL_write("GETBODY:<hash>\n")
+SSL_read(GETBODY request)
+if starts with "GETBODY:":
+  SSL_write(uint32_t count)     ──────►
+  SSL_write(Transaction[count]) ──────►
+                                        recv uint32_t count
+                                        recv Transaction[count]
+                                        attach to block
+                                        chain_add(chain, &block)
+tls_shutdown                            tls_shutdown
+```
+
+**Wire format for transaction body:**
+- 4 bytes: `uint32_t count` (number of transactions)
+- `count × sizeof(Transaction)` bytes: binary `Transaction` array
+
+**Safety bounds:** `recv_transactions()` rejects any `count > MAX_TRANSACTIONS`
+before reading any body data.
+
+**Zero-transaction blocks** (genesis, PoW with no pending txs): no GETBODY
+exchange occurs — the header is the full message and the connection closes after
+the header write.
+
+**Implementation:** `send_transactions()` and `recv_transactions()` are
+`static` helpers in `network.c`; `ssl_read_exact()` ensures complete reads
+across TLS record boundaries.
+
 #### API
 
 ```c
@@ -1415,9 +1536,10 @@ int net_server_run       (NetContext *ctx, Chain *chain);
 ```
 
 `net_server_run(ctx, chain)` — when `chain != NULL`, received blocks are
-deserialized, validated via `block_verify_hash`, and added to the chain via
-`chain_add`. When `chain == NULL`, received blocks are logged and discarded
-(monitor/inspection mode).
+deserialized, validated via `block_verify_hash`, transaction bodies fetched via
+the GETBODY protocol when `tx_count > 0`, and added to the chain via `chain_add`.
+When `chain == NULL`, received blocks are logged and discarded (monitor/inspection
+mode).
 
 `net_deserialize_block` parses the `key:value\n` wire format and calls
 `block_verify_hash` on the result before returning — integrity is enforced at
@@ -1445,6 +1567,12 @@ provider in CI environments.
 | `network/serialize` | NULL block, NULL buf, zero bufsz, buf too small, basic (field tags), NUL-terminated, distinct blocks |
 | `network/deserialize` | NULL buf, zero len, NULL out, garbage (hash verify fails), round-trip (serialize → deserialize, fields match) |
 | `network/broadcast` | NULL ctx, NULL block, NULL addr, invalid IP |
+
+Note: the GETBODY protocol helpers (`send_transactions`, `recv_transactions`,
+`ssl_read_exact`) are `static` in `network.c` and exercised indirectly through
+the integration tests. No live TLS connection tests exist in unit tests — the
+protocol requires two cooperating endpoints and is covered by the manual demo
+(`utils/demo.sh`).
 
 ---
 
@@ -1858,12 +1986,16 @@ _(No items — all ADR-003 PoS signature work is complete.)_
 
 ### Medium Priority
 
-| Work Item | ADR | Notes |
+_(No items — all medium-priority work is complete as of this revision.)_
+
+Previously completed:
+
+| Work Item | ADR | Status |
 |---|---|---|
-| Stake threshold enforcement | ADR-010 | Minimum stake before a validator can propose (Sybil resistance) |
-| Equivocation guard | ADR-010 | Prevent proposing two blocks for the same slot |
-| `net_server_run()` receive side | ADR-014 | Transaction body fetch on demand (headers only broadcast today) |
-| Full Merkle re-verification on read | ADR-012 | `compute_merkle_root` + compare when reading from storage |
+| Stake threshold enforcement | ADR-010 | Done — `validator_check_stake()` in `consensus.c` |
+| Equivocation guard | ADR-010 | Done — `equivocation.c/.h`; check in `verify_pos_rules`, record in `chain_add` |
+| `net_server_run()` receive side | ADR-014 | Done — GETBODY protocol; broadcaster responds with binary `Transaction[]` |
+| Full Merkle re-verification on read | ADR-012 | Done — `storage_read` / `storage_read_into` verify `compute_merkle_root` on blocks with transactions |
 
 ### Low Priority / Future
 
@@ -1871,5 +2003,4 @@ _(No items — all ADR-003 PoS signature work is complete.)_
 |---|---|
 | OQS OpenSSL provider runtime loading | Required for `NET_PQC_GROUP = p256_kyber768` in production |
 | Multi-threaded `net_server_run()` | One connection at a time today; pthread-based fan-in for higher concurrency |
-| Transaction body fetch protocol | Peers request full transaction bodies by block hash after accepting the header |
 | `make check` in CI | GitHub Actions or similar; run `make check` on every PR |

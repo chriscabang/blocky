@@ -14,6 +14,7 @@ SRCS     := $(filter-out src/main.c, $(SRC))
 UTILS_SRC := $(wildcard utils/*.c)
 UTILS_DIR := $(BUILD)/utils
 UTILS_BIN := $(patsubst utils/%.c, $(UTILS_DIR)/%, $(UTILS_SRC))
+DEMO_SH   := $(UTILS_DIR)/demo.sh
 
 # Release build dirs and objects
 REL_DIR  := $(BUILD)/release
@@ -58,13 +59,17 @@ LDFLAGS  += -L$(LIBS)/liboqs/build/lib -loqs
 
 all: release debug utils
 
-utils: $(UTILS_DIR) $(UTILS_BIN)
+utils: $(UTILS_DIR) $(UTILS_BIN) $(DEMO_SH)
 
 $(UTILS_DIR):
 	mkdir -p $(UTILS_DIR)
 
 $(UTILS_DIR)/%: utils/%.c $(DBG_OBJ) | $(UTILS_DIR) debug
 	$(CC) $(DBG_CFLAGS) $(LDFLAGS) -o $@ $< $(DBG_OBJ)
+
+$(DEMO_SH): utils/demo.sh | $(UTILS_DIR)
+	cp utils/demo.sh $@
+	chmod +x $@
 
 release: $(REL_DIR) $(REL_OBJ) $(REL_MAIN)
 	@echo "Linking $(PROJECT) release $(VERSION)..."

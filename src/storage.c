@@ -9,6 +9,7 @@
  */
 
 #include "storage.h"
+#include "crypto.h"
 #include "log.h"
 
 #include <dirent.h>
@@ -182,6 +183,21 @@ Block *storage_read(const char *hash) {
   }
 
   block->next = NULL; /* runtime-only: never trust what was on disk */
+
+  /* Merkle re-verification: skip for genesis / empty blocks.
+   * compute_merkle_root() sets merkle_root="0" for empty blocks, but the
+   * genesis block was committed with an all-zero merkle_root, so skip when
+   * transaction_count == 0 to avoid a false mismatch. */
+  if (block->transaction_count > 0) {
+    char recomputed[HASH_SIZE];
+    compute_merkle_root(block, recomputed);
+    if (strncmp(recomputed, (char *)block->merkle_root, HASH_SIZE - 1) != 0) {
+      log_error("storage_read: Merkle root mismatch for block %s", hash);
+      free(block);
+      return NULL;
+    }
+  }
+
   return block;
 }
 
@@ -209,6 +225,17 @@ int storage_read_into(const char *hash, Block *out) {
   }
 
   out->next = NULL; /* runtime-only: never trust what was on disk */
+
+  /* Merkle re-verification: same rule as storage_read — skip for empty blocks. */
+  if (out->transaction_count > 0) {
+    char recomputed[HASH_SIZE];
+    compute_merkle_root(out, recomputed);
+    if (strncmp(recomputed, (char *)out->merkle_root, HASH_SIZE - 1) != 0) {
+      log_error("storage_read_into: Merkle root mismatch for block %s", hash);
+      return EXIT_FAILURE;
+    }
+  }
+
   return EXIT_SUCCESS;
 }
 

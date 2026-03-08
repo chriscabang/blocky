@@ -1,5 +1,6 @@
 /* consensus.c — consensus routing: PoW and PoS block validation. */
 #include "consensus.h"
+#include "equivocation.h"
 #include "validator.h"
 #include "vrf.h"
 #include "sha256.h"
@@ -67,7 +68,15 @@ static int verify_pos_rules(const Block *block) {
         return EXIT_FAILURE;
     }
 
-    /* 2b. VRF proof: proposer was elected for this slot. */
+    /* 2b. Equivocation guard: reject if this proposer already committed slot. */
+    if (equivocation_check(block->proposer_id, block->index) != EXIT_SUCCESS) {
+        log_warn("verify_consensus: equivocation detected — proposer '%s' slot %u",
+                 block->proposer_id, block->index);
+        validator_registry_free(reg);
+        return EXIT_FAILURE;
+    }
+
+    /* 2c. VRF proof: proposer was elected for this slot. */
     uint64_t total = validator_total_stake(reg);
     uint8_t  prev_raw[SHA256_DIGEST_LEN];
     uint8_t  slot_msg[VRF_OUTPUT_LEN];
@@ -89,7 +98,7 @@ static int verify_pos_rules(const Block *block) {
         return EXIT_FAILURE;
     }
 
-    /* 2c. Block signature: proposer endorsed this specific block. */
+    /* 2d. Block signature: proposer endorsed this specific block. */
     if (block_verify_sig(block,
                          proposer->public_key,
                          sizeof(proposer->public_key)) != EXIT_SUCCESS) {

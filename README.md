@@ -34,6 +34,7 @@ tamper-proof record of all truth — nothing forgotten, nothing alterable.
   - [Running a Network Node](#4-running-a-network-node)
   - [Multi-Node Setup](#5-multi-node-setup)
 - [Utility Binaries](#utility-binaries)
+- [Live Demo](#live-demo)
 - [Running Tests](#running-tests)
 - [Project Layout](#project-layout)
 
@@ -48,7 +49,7 @@ tamper-proof record of all truth — nothing forgotten, nothing alterable.
 - **Git-style object store** — each block stored as a file named by its hash under `.chain/blocks/`
 - **TLS 1.3 minimum** enforced on all peer connections; bidirectional close_notify on teardown
 - **No global state, no `exit()` in library code** — clean C architecture (SOLID principles)
-- **213 unit tests** across 14 test suites via CMocka
+- **322 unit tests** across 19 test suites via CMocka
 
 ---
 
@@ -148,7 +149,7 @@ make all
 Other build targets:
 
 ```sh
-make test       # Build and run all 213 unit tests; print aggregated summary
+make test       # Build and run all 322 unit tests; print aggregated summary
 make check      # Run tests then report line coverage (requires lcov)
 make coverage   # Coverage report only
 make clean      # Remove build/ and .chain/
@@ -482,6 +483,7 @@ All built to `build/utils/` by `make all`.
 
 | Binary | Usage | Description |
 |---|---|---|
+| `demo.sh` | `./build/utils/demo.sh` | Live interactive demo — miner + watcher loops, send transactions and watch them mine |
 | `start_chain` | `start_chain <port> <cert> <key> [ca]` | TLS P2P server node; receives and validates blocks |
 | `propose_block` | `propose_block <addr> <port> <cert> <key> [ca]` | Mine a block and broadcast it to a specific peer |
 | `send_payment` | `send_payment <amount>` | Full Dilithium-3 sign-and-commit payment demo |
@@ -489,6 +491,67 @@ All built to `build/utils/` by `make all`.
 | `key_gen` | `key_gen <basename>` | Generate a Dilithium-3 keypair (`.pub` + `.key`) |
 | `inspect_block` | `inspect_block <hash\|HEAD>` | Print all fields of a stored block |
 | `inspect_chain` | `inspect_chain [page_size]` | Walk the chain from HEAD, print block summaries |
+
+---
+
+## Live Demo
+
+`demo.sh` is a self-contained interactive test that shows a payment transaction
+being submitted, mined, and verified in real time.
+
+**Run from the project root** (not from inside `build/`):
+
+```sh
+make all
+./build/utils/demo.sh
+```
+
+What it does:
+
+1. Wipes any existing `.chain/` and initialises a fresh chain
+2. Generates a Dilithium-3 keypair for `alice`
+3. Starts a **miner loop** in the background — polls the mempool every second
+   and mines a block whenever transactions are pending
+4. Starts a **watcher loop** in the background — polls chain status every 2
+   seconds and prints a line whenever the tip advances or the mempool changes
+
+```
+[16:29:00] init     initialising chain...
+[16:29:01] init     generating keypair for 'alice'...
+[16:29:01] init     ready.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Miner and watcher are running.
+
+  In another terminal, send transactions:
+    ./build/zuno-debug send --from alice --to bob   --amount 10
+    ./build/zuno-debug send --from alice --to carol --amount 25
+    ./build/zuno-debug send --from alice --to dave  --amount 5
+
+  Or verify a mined block:
+    ./build/zuno-debug log
+    ./build/zuno-debug verify <hash>
+
+  Press Ctrl+C to stop and clean up.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[16:29:03] chain    tip=0 a3f8c2...  mempool=0 transactions
+```
+
+Then in a second terminal:
+
+```sh
+./build/zuno-debug send --from alice --to bob --amount 10
+```
+
+The watcher and miner respond within ~2 seconds:
+
+```
+[16:29:05] chain    tip=0 a3f8c2...  mempool=1 transactions
+[16:29:06] miner    Mined block #1 (0000e6...)  [1 tx]
+[16:29:07] chain    tip=1 0000e6...  mempool=0 transactions
+```
+
+Press **Ctrl+C** to stop. The demo cleans up `.chain/` automatically on exit.
 
 ---
 
@@ -503,22 +566,27 @@ Example output:
 ```
   Suite                                    Passed  Failed   Total
   ──────────────────────────────────────────────────────────────
-  test_block                                   12       0      12
-  test_chain                                   18       0      18
-  test_consensus                                8       0       8
+  test_block                                   23       0      23
+  test_chain                                   24       0      24
+  test_consensus                               12       0      12
   test_crypto                                  20       0      20
+  test_equivocation                            10       0      10
   test_integration_miner                        9       0       9
   test_integration_payment                      6       0       6
+  test_key                                     18       0      18
   test_log                                      8       0       8
-  test_main                                    23       0      23
+  test_main                                    25       0      25
+  test_mempool                                 15       0      15
   test_network                                 25       0      25
   test_pos                                     13       0      13
   test_pow                                     13       0      13
-  test_sha256                                  16       0      16
-  test_storage                                 26       0      26
+  test_sha256                                  19       0      19
+  test_storage                                 29       0      29
   test_transaction                             15       0      15
+  test_validator                               21       0      21
+  test_vrf                                     17       0      17
   ──────────────────────────────────────────────────────────────
-  TOTAL                                       213       0     213
+  TOTAL                                       322       0     322
 ```
 
 ---
@@ -530,19 +598,25 @@ zuno/
 ├── src/                    C source files
 │   ├── main.c              CLI dispatcher (init, send, commit, propose, …)
 │   ├── chain.c             In-memory chain with pool allocator
-│   ├── block.c             Block create / hash / verify
-│   ├── storage.c           Git-style .chain/ object store
-│   ├── network.c           TLS 1.3 server, client, block serialization
+│   ├── block.c             Block create / hash / verify / sign
+│   ├── storage.c           Git-style .chain/ object store + Merkle re-verify on read
+│   ├── network.c           TLS 1.3 server, client, block serialization, GETBODY protocol
+│   ├── consensus.c         Consensus dispatcher (PoW vs PoS, equivocation guard)
+│   ├── equivocation.c      Slot-based equivocation guard (.chain/slots/)
 │   ├── pow.c               Proof-of-Work mining (midstate optimization)
 │   ├── pos.c               Proof-of-Stake validator registry and selection
-│   ├── consensus.c         Consensus dispatcher (PoW vs PoS)
 │   ├── crypto.c            Block hashing, Merkle root
 │   ├── sha256.c            Self-contained FIPS 180-4 SHA-256
 │   ├── transaction.c       Dilithium-3 sign and verify
+│   ├── validator.c         Validator registry (stake, public key, lookup)
+│   ├── vrf.c               VRF leader election (slot message, prove, verify)
+│   ├── key.c               Dilithium-3 key store (.chain/keys/)
+│   ├── mempool.c           Signed transaction queue (.chain/mempool/)
 │   └── log.c               Level-gated logger (ERROR/WARN/INFO/DEBUG)
 ├── inc/                    Public headers
 ├── tests/                  CMocka unit tests (one file per module)
-├── utils/                  Standalone demo binaries
+├── utils/                  Standalone utility binaries (built to build/utils/)
+│   ├── demo.sh             Live interactive demo — miner + watcher loops
 │   ├── start_chain.c       P2P server node
 │   ├── propose_block.c     Mine and broadcast a block
 │   ├── send_payment.c      Dilithium-3 payment demo
@@ -551,7 +625,7 @@ zuno/
 │   ├── inspect_block.c     Block field inspector
 │   └── inspect_chain.c     Chain walker
 ├── doc/
-│   └── NOTES.md            Architecture decision records (ADR-001 – ADR-016)
+│   └── NOTES.md            Architecture decision records (ADR-001 – ADR-018)
 ├── Makefile
 └── README.md
 ```
@@ -565,11 +639,15 @@ zuno/
 ├── peers             — peer list for propose (one ip:port per line)
 ├── tls-cert.pem      — node TLS certificate
 ├── tls-key.pem       — node TLS private key (chmod 600)
-└── blocks/
-    ├── 00/           — first two hex chars of hash
-    │   └── 00e4f2…   — full block serialized to binary
-    └── a3/
-        └── a3f8c2…
+├── blocks/           — content-addressed block store (one file per hash)
+│   ├── 00e4f2…
+│   └── a3f8c2…
+├── keys/             — Dilithium-3 keypairs (key_gen writes here)
+│   ├── alice.pk      — public key  (chmod 644)
+│   └── alice.sk      — secret key  (chmod 600)
+├── mempool/          — pending signed transactions (one file per tx hash)
+└── slots/            — equivocation guard (one file per PoS proposer)
+    └── alice         — binary uint32_t: last committed slot for alice
 ```
 
 ---

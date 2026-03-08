@@ -117,6 +117,45 @@ static int teardown_chain(void **state) {
   return 0;
 }
 
+/*
+ * Build a block with one transaction.  If set_merkle_root is non-zero,
+ * compute_merkle_root() is called and the result stored in the block so that
+ * storage_read() Merkle verification passes.  If zero, merkle_root stays
+ * all-zero (triggering a mismatch on read-back).
+ */
+static Block *make_block_with_tx(uint32_t index, const unsigned char *prev_hash,
+                                  int set_merkle_root) {
+  Block *b = calloc(1, sizeof(Block));
+  b->index             = index;
+  b->timestamp         = (time_t)(1700000000 + index);
+  b->transaction_count = 1;
+  b->next              = NULL;
+
+  if (prev_hash) {
+    memcpy(b->previous_hash, prev_hash, HASH_SIZE);
+  } else {
+    b->previous_hash[0] = GENESIS_PREVIOUS_HASH[0];
+    b->previous_hash[1] = '\0';
+  }
+
+  strncpy(b->transactions[0].sender,    "alice",
+          sizeof(b->transactions[0].sender)    - 1);
+  strncpy(b->transactions[0].recipient, "bob",
+          sizeof(b->transactions[0].recipient) - 1);
+  b->transactions[0].amount = 1000000ULL; /* 1 token */
+  b->transactions[0].nonce  = 1;
+
+  if (set_merkle_root) {
+    char mr[HASH_SIZE];
+    compute_merkle_root(b, mr);
+    memcpy(b->merkle_root, mr, HASH_SIZE);
+  }
+  /* else: merkle_root stays all-zero → mismatch on read-back */
+
+  block_hash(b);
+  return b;
+}
+
 /* ── storage_insert ───────────────────────────────────────────────────── */
 
 static void test_insert_null_block(void **state) {
@@ -176,6 +215,37 @@ static void test_read_nonexistent_hash(void **state) {
   (void)state;
   assert_null(storage_read("0000000000000000000000000000000000000000"
                            "000000000000000000000000dead"));
+}
+
+/* ── storage_read / Merkle re-verification ────────────────────────────── */
+
+static void test_read_merkle_valid(void **state) {
+  (void)state;
+  Block *b = make_block_with_tx(1, NULL, 1); /* correct merkle_root */
+  assert_int_equal(storage_insert(b), EXIT_SUCCESS);
+  Block *loaded = storage_read((char *)b->hash);
+  assert_non_null(loaded);
+  free(loaded);
+  free(b);
+}
+
+/* Block has transactions but merkle_root is all-zero — storage_read must reject. */
+static void test_read_merkle_mismatch(void **state) {
+  (void)state;
+  Block *b = make_block_with_tx(1, NULL, 0); /* zero merkle_root */
+  assert_int_equal(storage_insert(b), EXIT_SUCCESS);
+  Block *loaded = storage_read((char *)b->hash);
+  assert_null(loaded);
+  free(b);
+}
+
+static void test_read_into_merkle_mismatch(void **state) {
+  (void)state;
+  Block *b = make_block_with_tx(1, NULL, 0); /* zero merkle_root */
+  assert_int_equal(storage_insert(b), EXIT_SUCCESS);
+  Block out;
+  assert_int_equal(storage_read_into((char *)b->hash, &out), EXIT_FAILURE);
+  free(b);
 }
 
 /* ── storage_exists ───────────────────────────────────────────────────── */
@@ -366,6 +436,12 @@ int main(void) {
     cmocka_unit_test_setup_teardown(test_read_nonexistent_hash,  setup_empty,   teardown),
   };
 
+  const struct CMUnitTest merkle_tests[] = {
+    cmocka_unit_test_setup_teardown(test_read_merkle_valid,          setup_empty, teardown),
+    cmocka_unit_test_setup_teardown(test_read_merkle_mismatch,       setup_empty, teardown),
+    cmocka_unit_test_setup_teardown(test_read_into_merkle_mismatch,  setup_empty, teardown),
+  };
+
   const struct CMUnitTest exists_tests[] = {
     cmocka_unit_test_setup_teardown(test_exists_after_insert, setup_genesis, teardown),
     cmocka_unit_test_setup_teardown(test_exists_nonexistent,  setup_genesis, teardown),
@@ -397,9 +473,10 @@ int main(void) {
   };
 
   int failures = 0;
-  failures += cmocka_run_group_tests_name("insert",   insert_tests,   NULL, NULL);
-  failures += cmocka_run_group_tests_name("read",     read_tests,     NULL, NULL);
-  failures += cmocka_run_group_tests_name("exists",   exists_tests,   NULL, NULL);
+  failures += cmocka_run_group_tests_name("insert",      insert_tests,   NULL, NULL);
+  failures += cmocka_run_group_tests_name("read",        read_tests,     NULL, NULL);
+  failures += cmocka_run_group_tests_name("read/merkle", merkle_tests,   NULL, NULL);
+  failures += cmocka_run_group_tests_name("exists",      exists_tests,   NULL, NULL);
   failures += cmocka_run_group_tests_name("head",     head_tests,     NULL, NULL);
   failures += cmocka_run_group_tests_name("checkout", checkout_tests, NULL, NULL);
   failures += cmocka_run_group_tests_name("scan",     scan_tests,     NULL, NULL);

@@ -6,6 +6,7 @@
 #include "chain.h"
 #include "block.h"
 #include "consensus.h"
+#include "equivocation.h"
 #include "network.h"
 #include "storage.h"
 #include "log.h"
@@ -312,6 +313,16 @@ int chain_add(Chain *c, const Block *block) {
   if (storage_checkout((char *)slot->hash) != EXIT_SUCCESS) {
     pool_free(c, slot);
     return EXIT_FAILURE;
+  }
+
+  /* Record PoS slot commitment — prevents the same proposer from committing
+   * a second block for this slot (equivocation). Non-fatal: the block is
+   * already on disk; a failed write is logged but does not roll back. */
+  if (slot->consensus == CONSENSUS_POS && slot->proposer_id[0] != '\0') {
+    if (equivocation_record(slot->proposer_id, slot->index) != EXIT_SUCCESS) {
+      log_warn("chain_add: equivocation_record failed for '%s' slot %u",
+               slot->proposer_id, slot->index);
+    }
   }
 
   /* Recycle the old head slot — it is now safely on disk */

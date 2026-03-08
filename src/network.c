@@ -331,6 +331,98 @@ int net_deserialize_block(const char *buf, size_t len, Block *out)
     return EXIT_SUCCESS;
 }
 
+/* ── GETBODY helpers ──────────────────────────────────────────────────── */
+
+/*
+ * GETBODY protocol — two-phase block propagation:
+ *
+ * 1. Broadcaster sends a serialized header (net_serialize_block).
+ * 2. If the receiver needs the transaction bodies it replies with:
+ *      "GETBODY:<hash>\n"
+ * 3. Broadcaster sends:  uint32_t count  +  binary Transaction[count].
+ * 4. Receiver attaches transactions and calls chain_add.
+ *
+ * This keeps header broadcasts small and avoids transmitting raw key
+ * material before the peer has validated the block header (ADR-014).
+ */
+
+#define GETBODY_PREFIX     "GETBODY:"
+#define GETBODY_PREFIX_LEN 8
+#define GETBODY_BUF_SIZE   128   /* "GETBODY:" + 64-char hash + "\n\0" */
+
+/* Read exactly len bytes from ssl into buf.  Returns 0 on success, -1 on error. */
+static int ssl_read_exact(SSL *ssl, void *buf, int len)
+{
+    char *p = buf;
+    while (len > 0) {
+        int n = SSL_read(ssl, p, len);
+        if (n <= 0) return -1;
+        p   += n;
+        len -= n;
+    }
+    return 0;
+}
+
+/* Send uint32_t count followed by binary Transaction[count] over ssl. */
+static int send_transactions(SSL *ssl, const Block *block)
+{
+    uint32_t count = block->transaction_count;
+
+    if (SSL_write(ssl, &count, (int)sizeof(count)) <= 0) {
+        log_error("send_transactions: failed to send count");
+        return -1;
+    }
+
+    if (count == 0) return 0;
+
+    size_t      tx_bytes  = count * sizeof(Transaction);
+    const char *ptr       = (const char *)block->transactions;
+    size_t      remaining = tx_bytes;
+
+    while (remaining > 0) {
+        int chunk   = (remaining > 65536) ? 65536 : (int)remaining;
+        int written = SSL_write(ssl, ptr, chunk);
+        if (written <= 0) {
+            log_error("send_transactions: SSL_write failed");
+            return -1;
+        }
+        ptr       += written;
+        remaining -= (size_t)written;
+    }
+
+    return 0;
+}
+
+/* Read uint32_t count then binary Transaction[count] from ssl into block. */
+static int recv_transactions(SSL *ssl, Block *block)
+{
+    uint32_t count = 0;
+    if (ssl_read_exact(ssl, &count, (int)sizeof(count)) != 0) {
+        log_error("recv_transactions: failed to read count");
+        return -1;
+    }
+
+    if (count > MAX_TRANSACTIONS) {
+        log_error("recv_transactions: count %u exceeds MAX_TRANSACTIONS %d",
+                  count, MAX_TRANSACTIONS);
+        return -1;
+    }
+
+    if (count == 0) {
+        block->transaction_count = 0;
+        return 0;
+    }
+
+    size_t tx_bytes = count * sizeof(Transaction);
+    if (ssl_read_exact(ssl, block->transactions, (int)tx_bytes) != 0) {
+        log_error("recv_transactions: failed to read transaction data");
+        return -1;
+    }
+
+    block->transaction_count = count;
+    return 0;
+}
+
 /* ── Broadcast ────────────────────────────────────────────────────────── */
 
 int net_broadcast_block(NetContext  *ctx,
@@ -399,6 +491,24 @@ int net_broadcast_block(NetContext  *ctx,
 
     log_info("Block %u broadcast to %s:%u (%d bytes)",
              block->index, peer_addr, peer_port, written);
+
+    /* GETBODY: if the peer requests transaction bodies, send them. */
+    if (block->transaction_count > 0) {
+        char req[GETBODY_BUF_SIZE];
+        memset(req, 0, sizeof(req));
+        int rb = SSL_read(ssl, req, (int)sizeof(req) - 1);
+        if (rb > 0 &&
+            strncmp(req, GETBODY_PREFIX, GETBODY_PREFIX_LEN) == 0) {
+            if (send_transactions(ssl, block) < 0) {
+                log_warn("net_broadcast_block: failed to send transactions to %s:%u",
+                         peer_addr, peer_port);
+            } else {
+                log_info("net_broadcast_block: sent %u transaction(s) to %s:%u",
+                         block->transaction_count, peer_addr, peer_port);
+            }
+        }
+    }
+
     tls_shutdown(ssl);
     SSL_free(ssl);
     close(sock);
@@ -499,17 +609,39 @@ int net_server_run(NetContext *ctx, Chain *chain)
             Block block;
             if (net_deserialize_block(buf, (size_t)n, &block) != EXIT_SUCCESS) {
                 log_warn("net_server_run: invalid block data from %s", peer_ip);
-            } else if (chain != NULL) {
-                if (chain_add(chain, &block) == EXIT_SUCCESS) {
-                    log_info("net_server_run: block %u from %s added to chain",
-                             block.index, peer_ip);
-                } else {
-                    log_warn("net_server_run: block %u from %s rejected",
-                             block.index, peer_ip);
-                }
             } else {
-                log_info("net_server_run: block %u received (monitor mode)",
-                         block.index);
+                /* GETBODY: fetch transaction bodies if the block has any. */
+                if (block.transaction_count > 0) {
+                    char req[GETBODY_BUF_SIZE];
+                    int req_len = snprintf(req, sizeof(req),
+                                          GETBODY_PREFIX "%s\n",
+                                          (const char *)block.hash);
+                    if (SSL_write(ssl, req, req_len) <= 0) {
+                        log_warn("net_server_run: GETBODY send failed to %s",
+                                 peer_ip);
+                        block.transaction_count = 0; /* safe: no partial state */
+                    } else if (recv_transactions(ssl, &block) < 0) {
+                        log_warn("net_server_run: failed to receive transactions "
+                                 "from %s", peer_ip);
+                        block.transaction_count = 0;
+                    } else {
+                        log_info("net_server_run: received %u transaction(s) "
+                                 "from %s", block.transaction_count, peer_ip);
+                    }
+                }
+
+                if (chain != NULL) {
+                    if (chain_add(chain, &block) == EXIT_SUCCESS) {
+                        log_info("net_server_run: block %u from %s added to chain",
+                                 block.index, peer_ip);
+                    } else {
+                        log_warn("net_server_run: block %u from %s rejected",
+                                 block.index, peer_ip);
+                    }
+                } else {
+                    log_info("net_server_run: block %u received (monitor mode)",
+                             block.index);
+                }
             }
         }
 
