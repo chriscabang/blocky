@@ -124,7 +124,7 @@ static void test_unknown_command(void **state)
   assert_int_equal(run("foobar", NULL, 0), 1);
 }
 
-/* ── meta: version / help / propose ──────────────────────────────────── */
+/* ── meta: version / help ─────────────────────────────────────────────── */
 
 static void test_version(void **state)
 {
@@ -144,12 +144,46 @@ static void test_help(void **state)
   assert_non_null(strstr(out, "mine"));
 }
 
+/* ── propose ──────────────────────────────────────────────────────────── */
+
+/* No .chain/peers file — "no peers configured" is reported on stdout. */
 static void test_propose_no_peers(void **state)
 {
   (void)state;
-  char tmp[256];
-  assert_int_equal(run("init", tmp, sizeof(tmp)), 0);
+  run("init", NULL, 0);
+  char out[256];
+  assert_int_equal(run("propose", out, sizeof(out)), 0);
+  assert_non_null(strstr(out, "no peers configured"));
+}
 
+/* Empty peers file — also counts as "no peers configured". */
+static void test_propose_empty_peers_file(void **state)
+{
+  (void)state;
+  run("init", NULL, 0);
+  system("touch .chain/peers");
+  char out[256];
+  assert_int_equal(run("propose", out, sizeof(out)), 0);
+  assert_non_null(strstr(out, "no peers configured"));
+}
+
+/* Unreachable peer: propose returns 0 (P2P silent-failure by design). */
+static void test_propose_unreachable_peer(void **state)
+{
+  (void)state;
+  run("init", NULL, 0);
+  system("printf '127.0.0.1:9999\\n' > .chain/peers");
+  char out[256];
+  assert_int_equal(run("propose", out, sizeof(out)), 0);
+  assert_non_null(strstr(out, "Proposed block #0"));
+}
+
+/* Malformed peer entries are skipped; propose still succeeds. */
+static void test_propose_malformed_entries_skipped(void **state)
+{
+  (void)state;
+  run("init", NULL, 0);
+  system("printf 'not-a-peer\\nbadformat\\n' > .chain/peers");
   char out[256];
   assert_int_equal(run("propose", out, sizeof(out)), 0);
   assert_non_null(strstr(out, "Proposed block #0"));
@@ -407,9 +441,15 @@ int main(void)
   };
 
   const struct CMUnitTest meta_tests[] = {
-    cmocka_unit_test_setup_teardown(test_version,          setup, teardown),
-    cmocka_unit_test_setup_teardown(test_help,             setup, teardown),
-    cmocka_unit_test_setup_teardown(test_propose_no_peers, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_version, setup, teardown),
+    cmocka_unit_test_setup_teardown(test_help,    setup, teardown),
+  };
+
+  const struct CMUnitTest propose_tests[] = {
+    cmocka_unit_test_setup_teardown(test_propose_no_peers,              setup, teardown),
+    cmocka_unit_test_setup_teardown(test_propose_empty_peers_file,      setup, teardown),
+    cmocka_unit_test_setup_teardown(test_propose_unreachable_peer,      setup, teardown),
+    cmocka_unit_test_setup_teardown(test_propose_malformed_entries_skipped, setup, teardown),
   };
 
   const struct CMUnitTest init_tests[] = {
@@ -453,6 +493,7 @@ int main(void)
   int failures = 0;
   failures += cmocka_run_group_tests_name("args",    args_tests,    NULL, NULL);
   failures += cmocka_run_group_tests_name("meta",    meta_tests,    NULL, NULL);
+  failures += cmocka_run_group_tests_name("propose", propose_tests, NULL, NULL);
   failures += cmocka_run_group_tests_name("init",    init_tests,    NULL, NULL);
   failures += cmocka_run_group_tests_name("status",  status_tests,  NULL, NULL);
   failures += cmocka_run_group_tests_name("send",    send_tests,    NULL, NULL);

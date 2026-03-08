@@ -873,7 +873,7 @@ Design goals:
 | `verify <hash>` | `block_verify_hash()` → prints `OK` or `FAIL` |
 | `send --from <s> --to <r> --amount <a>` | Appends one line to `.chain/STAGED` |
 | `commit` | Reads STAGED → `block_create` → `compute_merkle_root` → `mine_block` → `chain_add` → unlinks STAGED |
-| `propose` | `chain_propose(c, c->head)` → reads `.chain/peers`, broadcasts via TLS |
+| `propose` | `count_peers()` → if 0: print `[no peers configured]`; else `chain_propose()` → print `[broadcast to N peer(s)]` |
 | `version` | Prints version string |
 | `help [command]` | Usage summary or per-command help |
 
@@ -896,6 +896,55 @@ alice\tcarol\t5000000\n
   before STAGED is opened
 
 The staging file is a runtime artefact — removed by `make clean`.
+
+#### Decision — `propose` Command
+
+`propose` broadcasts the current chain tip to all configured peers.
+
+**Peers file.** Peers are listed one per line in `.chain/peers` (format:
+`ip:port`). The file is not created by `init`; operators populate it manually.
+If the file is absent or empty, `propose` exits `0` with
+`[no peers configured]` — not an error.
+
+**`count_peers()` helper.** `main.c` counts non-empty lines in `.chain/peers`
+before calling `chain_propose`. The result drives the output:
+
+```c
+int peers = count_peers();
+if (peers == 0) {
+    printf("Proposed block #%u (%.16s...)  [no peers configured]\n", …);
+    return 0;
+}
+// chain_propose → TLS broadcast
+printf("Proposed block #%u (%.16s...)  [broadcast to %d peer(s)]\n", …);
+```
+
+**`chain_propose()` behaviour.** Located in `chain.c` (see ADR-014):
+- Reads `.chain/peers` line by line; parses `ip:port` with `strrchr`.
+- Creates an anonymous TLS client context (no client cert — server auth only).
+- Calls `net_broadcast_block()` per peer; counts `ok` and `fail`.
+- Returns `EXIT_SUCCESS` even if all peers are unreachable (**P2P resilience**:
+  partial broadcast is acceptable; the node keeps its local chain valid
+  regardless).
+- Returns `EXIT_FAILURE` only on NULL arguments or TLS context initialisation
+  failure (both are programming errors, not runtime failures).
+
+**Output format.**
+
+```
+Proposed block #5 (3a8f2b1c9d7e4f06...)  [broadcast to 3 peer(s)]
+Proposed block #5 (3a8f2b1c9d7e4f06...)  [no peers configured]
+```
+
+**Test coverage.** `test_main.c` `propose` group (4 tests):
+- `test_propose_no_peers` — no `.chain/peers` file → `[no peers configured]`
+- `test_propose_empty_peers_file` — empty file → `[no peers configured]`
+- `test_propose_unreachable_peer` — `127.0.0.1:9999` → returns `0` (silent fail)
+- `test_propose_malformed_entries_skipped` — bad lines → returns `0`
+
+`test_integration_payment.c` `payment/propose` group (2 tests):
+- `test_propose_after_commit_no_peers` — API-level; no peers file → `EXIT_SUCCESS`
+- `test_propose_with_unreachable_peer` — unreachable peer → `EXIT_SUCCESS`
 
 #### Decision — Dispatch Table
 

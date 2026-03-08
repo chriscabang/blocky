@@ -414,6 +414,24 @@ static int cmd_mine(int argc, char **argv)
     return 0;
 }
 
+/* Count non-empty lines in .chain/peers (one "ip:port" entry per line). */
+static int count_peers(void)
+{
+    FILE *f = fopen(".chain/peers", "r");
+    if (!f) return 0;
+    int n = 0;
+    char line[128];
+    while (fgets(line, (int)sizeof(line), f)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'
+                           || line[len-1] == ' ' || line[len-1] == '\t'))
+            len--;
+        if (len > 0) n++;
+    }
+    fclose(f);
+    return n;
+}
+
 static int cmd_propose(int argc, char **argv)
 {
     (void)argc; (void)argv;
@@ -424,12 +442,20 @@ static int cmd_propose(int argc, char **argv)
         return 2;
     }
 
+    int peers = count_peers();
+    if (peers == 0) {
+        printf("Proposed block #%u (%.16s...)  [no peers configured]\n",
+               c->head->index, (char *)c->head->hash);
+        chain_unload(c);
+        return 0;
+    }
+
     int rc = chain_propose(c, c->head);
     if (rc != EXIT_SUCCESS) {
         fprintf(stderr, "error: chain_propose failed\n");
     } else {
-        printf("Proposed block #%u (%.16s...)\n",
-               c->head->index, (char *)c->head->hash);
+        printf("Proposed block #%u (%.16s...)  [broadcast to %d peer(s)]\n",
+               c->head->index, (char *)c->head->hash, peers);
     }
 
     chain_unload(c);
@@ -456,7 +482,7 @@ static const char *USAGE =
     "  send --from <s> --to <r> --amount <a>\n"
     "                                   Sign and queue a transaction (mempool)\n"
     "  mine                             Build a PoW block from mempool transactions\n"
-    "  propose                          Broadcast tip to network (stub)\n"
+    "  propose                          Broadcast tip to all configured peers\n"
     "  version                          Print version\n"
     "  help [command]                   Show this help or per-command help\n";
 

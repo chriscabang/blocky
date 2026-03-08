@@ -341,6 +341,54 @@ static void test_tampered_merkle_root_rejected(void **state)
     block_free(b);
 }
 
+/* ── payment/propose ──────────────────────────────────────────────────── */
+
+/*
+ * Propose after a committed block with no peers file.
+ * chain_propose must return EXIT_SUCCESS — no peers is not an error
+ * (nothing to broadcast is fine in a P2P design, ADR-014).
+ */
+static void test_propose_after_commit_no_peers(void **state)
+{
+    Chain *c = *state;
+
+    Transaction tx = make_tx("alice", "bob", 10, 1);
+    Block *b = commit_block(c, &tx, 1);
+    assert_non_null(b);
+    assert_int_equal(chain_add(c, b), EXIT_SUCCESS);
+
+    /* No .chain/peers file — nothing to broadcast, EXIT_SUCCESS by design. */
+    assert_int_equal(chain_propose(c, b), EXIT_SUCCESS);
+
+    block_free(b);
+}
+
+/*
+ * Propose with an unreachable peer.
+ * chain_propose must return EXIT_SUCCESS — peer failure is silenced
+ * (partial broadcast is acceptable in a P2P network, ADR-014).
+ */
+static void test_propose_with_unreachable_peer(void **state)
+{
+    Chain *c = *state;
+
+    Transaction tx = make_tx("carol", "dave", 20, 2);
+    Block *b = commit_block(c, &tx, 1);
+    assert_non_null(b);
+    assert_int_equal(chain_add(c, b), EXIT_SUCCESS);
+
+    /* Register an unreachable peer — connect will get ECONNREFUSED immediately. */
+    FILE *pf = fopen(".chain/peers", "w");
+    assert_non_null(pf);
+    fprintf(pf, "127.0.0.1:9999\n");
+    fclose(pf);
+
+    /* Broadcast failure is silenced — EXIT_SUCCESS regardless of peer reachability. */
+    assert_int_equal(chain_propose(c, b), EXIT_SUCCESS);
+
+    block_free(b);
+}
+
 /* ── main ─────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -365,10 +413,16 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_tampered_merkle_root_rejected, setup, teardown),
     };
 
+    const struct CMUnitTest propose_tests[] = {
+        cmocka_unit_test_setup_teardown(test_propose_after_commit_no_peers,    setup, teardown),
+        cmocka_unit_test_setup_teardown(test_propose_with_unreachable_peer,    setup, teardown),
+    };
+
     int failures = 0;
     failures += cmocka_run_group_tests_name("payment/send",        send_tests,       NULL, NULL);
     failures += cmocka_run_group_tests_name("payment/batch",       batch_tests,      NULL, NULL);
     failures += cmocka_run_group_tests_name("payment/multi_block", multiblock_tests, NULL, NULL);
     failures += cmocka_run_group_tests_name("payment/invalid",     invalid_tests,    NULL, NULL);
+    failures += cmocka_run_group_tests_name("payment/propose",     propose_tests,    NULL, NULL);
     return failures;
 }
