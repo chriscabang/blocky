@@ -11,6 +11,7 @@
 #include "storage.h"
 #include "log.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -346,4 +347,47 @@ char **storage_scan(unsigned int offset, unsigned int *count) {
 
   *count = actual;
   return scans;
+}
+
+char **storage_list_all(unsigned int *count) {
+  if (!count) return NULL;
+  *count = 0;
+
+  DIR *d = opendir(BLOCKS_DIR);
+  if (!d) {
+    log_debug("storage_list_all: %s not found", BLOCKS_DIR);
+    return NULL;
+  }
+
+  /* First pass: count valid entries */
+  unsigned int n = 0;
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    if (e->d_name[0] == '.') continue;
+    n++;
+  }
+  rewinddir(d);
+
+  if (n == 0) { closedir(d); return NULL; }
+
+  char **result = calloc(n, sizeof(char *));
+  if (!result) { closedir(d); return NULL; }
+
+  unsigned int i = 0;
+  while ((e = readdir(d)) != NULL && i < n) {
+    if (e->d_name[0] == '.') continue;
+    result[i] = malloc(HASH_SIZE);
+    if (!result[i]) {
+      for (unsigned int j = 0; j < i; j++) free(result[j]);
+      free(result);
+      closedir(d);
+      return NULL;
+    }
+    strncpy(result[i], e->d_name, HASH_SIZE - 1);
+    result[i][HASH_SIZE - 1] = '\0';
+    i++;
+  }
+  closedir(d);
+  *count = i;
+  return result;
 }

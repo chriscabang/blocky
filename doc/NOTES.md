@@ -432,7 +432,7 @@ then `git commit`.
 
 ### ADR-002: Canonical Chain Rule — GHOST
 
-**Date:** 2025-03 · **Status:** Adopted
+**Date:** 2025-03 · **Status:** Adopted · **Implemented:** 2026-03 · **Files:** `inc/chain.h`, `src/chain.c`, `inc/storage.h`, `src/storage.c`
 
 #### Context
 
@@ -474,14 +474,35 @@ The `consensus` field in `Block` already distinguishes these two modes.
 - **Best fit for the git analogy** — the "heaviest branch" wins, just as `main`
   wins in a real project because more contributors build on it.
 
-#### Implementation Status
+#### Implementation
 
-GHOST fork-choice logic (`fork_choice()`) is **pending**. It belongs in
-`src/chain.c` as a static helper, called from `chain_validate()` (declared in
-`inc/chain.h`) when two competing tips are both structurally valid. A new
-exported function `chain_fork_choice(const Chain *c)` should return a pointer
-to the heaviest-subtree tip. The `consensus` field already present in `Block`
-carries the mode (`POW` / `POS`) needed to select the correct weight metric.
+`chain_fork_choice(Chain *c)` is declared in `inc/chain.h` and implemented in
+`src/chain.c`. It is called automatically by `chain_load()` so a node always
+boots onto the canonical branch, even after storing competing blocks from peers.
+
+**Algorithm:**
+
+1. `storage_list_all()` (new in `src/storage.c`) enumerates every block file in
+   `.chain/blocks/` — all stored blocks, not just the current HEAD chain.
+2. Each block is loaded into a lightweight `GhostNode {hash, prev, consensus}`
+   struct. Full transaction arrays are discarded immediately to bound memory.
+3. The genesis block is located by its sentinel `previous_hash == "0"`.
+4. `ghost_walk()` descends greedily from genesis: at each fork point it picks
+   the child whose `ghost_subtree_weight()` is greatest.
+5. Tie-break: lexicographically smaller hash wins (deterministic, no randomness).
+6. If the canonical tip differs from `c->head`, the pool slot is updated and
+   `storage_checkout()` persists the new HEAD.
+
+**Weight metric:**
+
+| Mode | Weight per block | Notes |
+|---|---|---|
+| PoW (`consensus == 0`) | 1 | Uniform — every block counts equally |
+| PoS (`consensus == 1`) | 1 | Placeholder — will use proposer stake once ADR-003 validator registry is implemented |
+
+**Tests:** 6 new tests in `tests/test_chain.c` under the `fork_choice` group —
+null guard, genesis-only (no-op), linear chain (no reorg), heavy-branch-wins
+(core GHOST property), tiebreak-by-hash, and storage-head-updated-after-reorg.
 
 ---
 
@@ -1565,7 +1586,6 @@ Items that are designed (ADR adopted) but not yet implemented:
 
 | Work Item | ADR | Location |
 |---|---|---|
-| GHOST fork-choice (`fork_choice()`) | ADR-002 | `chain.c` — helper for `chain_validate` or new `chain_fork_choice()` |
 | Validator registry (public keys + stake) | ADR-003 | New `validator.c` or extension of `storage.c` |
 | VRF leader selection | ADR-003 | Build from PQC primitives; Algorand VRF is a reference |
 | Dilithium-3 block signatures | ADR-003 | Wire `verify_block_signature()` in `consensus.c` to key registry |

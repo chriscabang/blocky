@@ -34,7 +34,160 @@ static void pool_free(Chain *c, Block *b) {
     c->pool_used[idx] = 0;
 }
 
+/* ── GHOST fork-choice helpers ────────────────────────────────────────── */
+
+/*
+ * Lightweight per-block record used only during fork-choice computation.
+ * Avoids keeping full Block structs (with transaction arrays) in memory while
+ * scanning the entire object store.
+ */
+typedef struct {
+  char    hash[HASH_SIZE];
+  char    prev[HASH_SIZE];
+  uint8_t consensus;
+} GhostNode;
+
+/*
+ * Compute the subtree weight rooted at 'hash'.
+ *
+ * PoW (consensus == 0): every block contributes 1.
+ * PoS (consensus == 1): 1 per block until the validator registry (ADR-003)
+ *                        is wired; will be upgraded to proposer stake then.
+ *
+ * Recursion depth equals the fork depth, not the chain length — safe in
+ * practice because forks are shallow (typically 1-3 blocks).
+ */
+static uint64_t ghost_subtree_weight(const char *hash,
+                                     const GhostNode *nodes, unsigned int n)
+{
+  uint64_t w = 1; /* self */
+  for (unsigned int i = 0; i < n; i++) {
+    if (strcmp(nodes[i].prev, hash) == 0)
+      w += ghost_subtree_weight(nodes[i].hash, nodes, n);
+  }
+  return w;
+}
+
+/*
+ * Walk the GHOST fork-choice rule from 'hash' toward a leaf, writing the
+ * canonical tip hash into 'out' (must be >= HASH_SIZE bytes).
+ *
+ * At each step the child with the greatest subtree weight is chosen.
+ * Tie-break: lexicographically smaller hash wins (deterministic).
+ */
+static void ghost_walk(const char *hash,
+                       const GhostNode *nodes, unsigned int n,
+                       char *out)
+{
+  const GhostNode *best   = NULL;
+  uint64_t         best_w = 0;
+
+  for (unsigned int i = 0; i < n; i++) {
+    if (strcmp(nodes[i].prev, hash) != 0) continue;
+    uint64_t w = ghost_subtree_weight(nodes[i].hash, nodes, n);
+    if (w > best_w ||
+        (w == best_w && best != NULL &&
+         strcmp(nodes[i].hash, best->hash) < 0)) {
+      best_w = w;
+      best   = &nodes[i];
+    }
+  }
+
+  if (!best) {
+    /* No children — this node is the canonical tip */
+    strncpy(out, hash, HASH_SIZE);
+    out[HASH_SIZE - 1] = '\0';
+    return;
+  }
+
+  ghost_walk(best->hash, nodes, n, out);
+}
+
 /* ── public API ───────────────────────────────────────────────────────── */
+
+int chain_fork_choice(Chain *c) {
+  if (!c) {
+    log_error("chain_fork_choice: NULL chain");
+    return EXIT_FAILURE;
+  }
+
+  unsigned int n = 0;
+  char **hashes = storage_list_all(&n);
+  if (!hashes || n == 0) {
+    free(hashes);
+    return EXIT_SUCCESS; /* empty store — nothing to do */
+  }
+
+  /* Build lightweight node array from full blocks */
+  GhostNode *nodes = calloc(n, sizeof(GhostNode));
+  if (!nodes) {
+    for (unsigned int i = 0; i < n; i++) free(hashes[i]);
+    free(hashes);
+    return EXIT_FAILURE;
+  }
+
+  unsigned int valid = 0;
+  for (unsigned int i = 0; i < n; i++) {
+    Block *b = storage_read(hashes[i]);
+    if (b) {
+      memcpy(nodes[valid].hash, b->hash,          HASH_SIZE);
+      memcpy(nodes[valid].prev, b->previous_hash, HASH_SIZE);
+      nodes[valid].consensus = b->consensus;
+      valid++;
+      block_free(b);
+    }
+    free(hashes[i]);
+  }
+  free(hashes);
+
+  if (valid == 0) { free(nodes); return EXIT_SUCCESS; }
+
+  /* Find genesis: the block whose previous_hash is the sentinel "0\0" */
+  const char *root = NULL;
+  for (unsigned int i = 0; i < valid; i++) {
+    if (nodes[i].prev[0] == GENESIS_PREVIOUS_HASH[0] &&
+        nodes[i].prev[1] == '\0') {
+      root = nodes[i].hash;
+      break;
+    }
+  }
+  if (!root) {
+    log_error("chain_fork_choice: no genesis block found in object store");
+    free(nodes);
+    return EXIT_FAILURE;
+  }
+
+  /* Walk GHOST from genesis to the canonical tip */
+  char canonical[HASH_SIZE];
+  ghost_walk(root, nodes, valid, canonical);
+  free(nodes);
+
+  /* No reorg needed */
+  if (strcmp(canonical, (char *)c->head->hash) == 0)
+    return EXIT_SUCCESS;
+
+  /* Reorg: load the canonical tip into a pool slot and update HEAD */
+  log_info("chain_fork_choice: reorg to %.16s...", canonical);
+
+  Block *slot = pool_alloc(c);
+  if (!slot) {
+    log_error("chain_fork_choice: pool exhausted during reorg");
+    return EXIT_FAILURE;
+  }
+  if (storage_read_into(canonical, slot) != EXIT_SUCCESS) {
+    pool_free(c, slot);
+    return EXIT_FAILURE;
+  }
+  if (storage_checkout(canonical) != EXIT_SUCCESS) {
+    pool_free(c, slot);
+    return EXIT_FAILURE;
+  }
+
+  Block *old = c->head;
+  c->head    = slot;
+  pool_free(c, old);
+  return EXIT_SUCCESS;
+}
 
 Chain *chain_load(void) {
   Chain *c = calloc(1, sizeof(Chain));
@@ -56,6 +209,10 @@ Chain *chain_load(void) {
     }
     c->head = slot;
     log_info("chain_load: loaded tip block %u", c->head->index);
+
+    /* Resolve any stored forks to the canonical (heaviest) tip */
+    if (chain_fork_choice(c) != EXIT_SUCCESS)
+      log_warn("chain_load: fork_choice failed; keeping stored HEAD");
   } else {
     /* Empty chain: create and persist a genesis block */
     Block *slot = pool_alloc(c);

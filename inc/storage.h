@@ -117,4 +117,22 @@ char **storage_scan(unsigned int offset, unsigned int *count);
  */
 int storage_read_into(const char *hash, Block *out);
 
+/**
+ * @brief List every block hash present in the object store.
+ *
+ * Reads the filenames from .chain/blocks/ (each file is named by its hash).
+ * Does NOT follow HEAD or any ref — returns ALL stored blocks, including those
+ * on non-canonical branches. Used by chain_fork_choice() to build the fork
+ * graph without assuming a linear history.
+ *
+ * Caller must free each entry and then the outer array:
+ *   for (i = 0; i < count; i++) free(hashes[i]);
+ *   free(hashes);
+ *
+ * @param count  Out: number of hashes returned.
+ * @return Heap-allocated array of hash strings, or NULL if the store is empty
+ *         or an error occurs.
+ */
+char **storage_list_all(unsigned int *count);
+
 #endif /* STORAGE_H */

@@ -242,6 +242,119 @@ static void test_add_pool_exhaustion(void **state) {
   block_free(b);
 }
 
+/* ── chain_fork_choice ────────────────────────────────────────────────── */
+
+/* NULL chain must return EXIT_FAILURE */
+static void test_fork_choice_null(void **state) {
+  (void)state;
+  assert_int_equal(chain_fork_choice(NULL), EXIT_FAILURE);
+}
+
+/* Only genesis in store — no fork, head hash unchanged */
+static void test_fork_choice_genesis_only(void **state) {
+  Chain *c = *state;
+  unsigned char orig[HASH_SIZE];
+  memcpy(orig, c->head->hash, HASH_SIZE);
+  assert_int_equal(chain_fork_choice(c), EXIT_SUCCESS);
+  assert_memory_equal(c->head->hash, orig, HASH_SIZE);
+}
+
+/* Linear G→B1→B2 — no fork, head stays at B2 */
+static void test_fork_choice_linear_no_reorg(void **state) {
+  Chain *c = *state;
+  Block *b1 = make_next(1, c->head->hash);
+  Block *b2 = make_next(2, b1->hash);
+  assert_int_equal(chain_add(c, b1), EXIT_SUCCESS);
+  assert_int_equal(chain_add(c, b2), EXIT_SUCCESS);
+
+  unsigned char tip[HASH_SIZE];
+  memcpy(tip, c->head->hash, HASH_SIZE);
+  assert_int_equal(chain_fork_choice(c), EXIT_SUCCESS);
+  assert_memory_equal(c->head->hash, tip, HASH_SIZE);
+
+  block_free(b1);
+  block_free(b2);
+}
+
+/*
+ * Fork: G → B1           (subtree weight 1)
+ *       G → B2 → B3      (subtree weight 2)
+ * GHOST must select B3 as the canonical tip.
+ */
+static void test_fork_choice_heavy_branch_wins(void **state) {
+  Chain *c = *state;
+
+  Block *b1 = make_next(1, c->head->hash);
+  assert_int_equal(storage_insert(b1), EXIT_SUCCESS);
+
+  /* B2 shares genesis as parent but has a different timestamp → different hash */
+  Block *b2 = make_next(1, c->head->hash);
+  b2->timestamp += 1;
+  assert_int_equal(block_compute_hash(b2), EXIT_SUCCESS);
+  assert_int_equal(storage_insert(b2), EXIT_SUCCESS);
+
+  Block *b3 = make_next(2, b2->hash);
+  assert_int_equal(storage_insert(b3), EXIT_SUCCESS);
+
+  assert_int_equal(chain_fork_choice(c), EXIT_SUCCESS);
+  assert_string_equal((char *)c->head->hash, (char *)b3->hash);
+
+  block_free(b1);
+  block_free(b2);
+  block_free(b3);
+}
+
+/*
+ * Equal-weight fork: G → B1 (weight 1) and G → B2 (weight 1).
+ * Tie-break: lexicographically smaller hash wins (deterministic).
+ */
+static void test_fork_choice_tiebreak_by_hash(void **state) {
+  Chain *c = *state;
+
+  Block *b1 = make_next(1, c->head->hash);
+  assert_int_equal(storage_insert(b1), EXIT_SUCCESS);
+
+  Block *b2 = make_next(1, c->head->hash);
+  b2->timestamp += 1;
+  assert_int_equal(block_compute_hash(b2), EXIT_SUCCESS);
+  assert_int_equal(storage_insert(b2), EXIT_SUCCESS);
+
+  assert_int_equal(chain_fork_choice(c), EXIT_SUCCESS);
+
+  const char *expected = (strcmp((char *)b1->hash, (char *)b2->hash) < 0)
+                         ? (char *)b1->hash : (char *)b2->hash;
+  assert_string_equal((char *)c->head->hash, expected);
+
+  block_free(b1);
+  block_free(b2);
+}
+
+/* After a reorg, storage HEAD must also point to the new canonical tip */
+static void test_fork_choice_updates_storage_head(void **state) {
+  Chain *c = *state;
+
+  Block *b1 = make_next(1, c->head->hash);
+  assert_int_equal(storage_insert(b1), EXIT_SUCCESS);
+
+  Block *b2 = make_next(1, c->head->hash);
+  b2->timestamp += 1;
+  assert_int_equal(block_compute_hash(b2), EXIT_SUCCESS);
+  assert_int_equal(storage_insert(b2), EXIT_SUCCESS);
+
+  Block *b3 = make_next(2, b2->hash);
+  assert_int_equal(storage_insert(b3), EXIT_SUCCESS);
+
+  assert_int_equal(chain_fork_choice(c), EXIT_SUCCESS);
+
+  char disk_head[HASH_SIZE];
+  assert_int_equal(storage_head(disk_head, sizeof(disk_head)), EXIT_SUCCESS);
+  assert_string_equal(disk_head, (char *)b3->hash);
+
+  block_free(b1);
+  block_free(b2);
+  block_free(b3);
+}
+
 /* ── chain_propose ────────────────────────────────────────────────────── */
 
 /* NULL chain must return EXIT_FAILURE. */
@@ -307,11 +420,21 @@ int main(void) {
     cmocka_unit_test_setup_teardown(test_propose_no_peers,   setup_loaded, teardown),
   };
 
+  const struct CMUnitTest fork_choice_tests[] = {
+    cmocka_unit_test_setup_teardown(test_fork_choice_null,                setup_empty,  teardown_empty),
+    cmocka_unit_test_setup_teardown(test_fork_choice_genesis_only,        setup_loaded, teardown),
+    cmocka_unit_test_setup_teardown(test_fork_choice_linear_no_reorg,     setup_loaded, teardown),
+    cmocka_unit_test_setup_teardown(test_fork_choice_heavy_branch_wins,   setup_loaded, teardown),
+    cmocka_unit_test_setup_teardown(test_fork_choice_tiebreak_by_hash,    setup_loaded, teardown),
+    cmocka_unit_test_setup_teardown(test_fork_choice_updates_storage_head, setup_loaded, teardown),
+  };
+
   int failures = 0;
-  failures += cmocka_run_group_tests_name("load",     load_tests,     NULL, NULL);
-  failures += cmocka_run_group_tests_name("unload",   unload_tests,   NULL, NULL);
-  failures += cmocka_run_group_tests_name("validate", validate_tests, NULL, NULL);
-  failures += cmocka_run_group_tests_name("add",      add_tests,      NULL, NULL);
-  failures += cmocka_run_group_tests_name("propose",  propose_tests,  NULL, NULL);
+  failures += cmocka_run_group_tests_name("load",        load_tests,        NULL, NULL);
+  failures += cmocka_run_group_tests_name("unload",      unload_tests,      NULL, NULL);
+  failures += cmocka_run_group_tests_name("validate",    validate_tests,    NULL, NULL);
+  failures += cmocka_run_group_tests_name("add",         add_tests,         NULL, NULL);
+  failures += cmocka_run_group_tests_name("propose",     propose_tests,     NULL, NULL);
+  failures += cmocka_run_group_tests_name("fork_choice", fork_choice_tests, NULL, NULL);
   return failures;
 }

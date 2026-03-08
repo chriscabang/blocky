@@ -78,6 +78,29 @@ int chain_add(Chain *c, const Block *block);
 int chain_propose(Chain *c, const Block *block);
 
 /**
+ * @brief Select the canonical chain tip using the GHOST fork-choice rule.
+ *
+ * Loads every block in the object store, builds the fork graph, and walks
+ * it greedily from the genesis block — at each fork point choosing the child
+ * whose subtree has the greatest total weight:
+ *
+ *   PoW (consensus == 0): weight = 1 per block
+ *   PoS (consensus == 1): weight = 1 per block (stake-weighted once ADR-003
+ *                          validator registry is wired)
+ *
+ * Tie-break: lexicographically smaller hash wins (deterministic).
+ *
+ * If the canonical tip differs from c->head the pool slot is updated and
+ * storage_checkout() is called to persist the new HEAD.
+ *
+ * Called automatically by chain_load() to ensure the node always boots onto
+ * the canonical branch, even after storing competing blocks from peers.
+ *
+ * @return EXIT_SUCCESS or EXIT_FAILURE.
+ */
+int chain_fork_choice(Chain *c);
+
+/**
  * @brief Log info about the current chain tip.
  */
 void chain_info(const Chain *c);
