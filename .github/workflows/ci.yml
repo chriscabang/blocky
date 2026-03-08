@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  build-and-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── system deps ────────────────────────────────────────────────────
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            gcc cmake ninja-build \
+            libssl-dev \
+            libcmocka-dev \
+            lcov
+
+      # ── liboqs ─────────────────────────────────────────────────────────
+      # Cache the full build directory. Bump the cache key suffix (v1→v2)
+      # to force a clean rebuild (e.g. after a major liboqs upstream change).
+      - name: Cache liboqs
+        id: cache-liboqs
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/../libs/liboqs
+          key: liboqs-main-${{ runner.os }}-v1
+
+      - name: Clone and build liboqs
+        if: steps.cache-liboqs.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${{ github.workspace }}/../libs"
+          git clone --depth 1 \
+            https://github.com/open-quantum-safe/liboqs.git \
+            "${{ github.workspace }}/../libs/liboqs"
+          cmake -GNinja \
+            -DOQS_BUILD_ONLY_LIB=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -S "${{ github.workspace }}/../libs/liboqs" \
+            -B "${{ github.workspace }}/../libs/liboqs/build"
+          ninja -C "${{ github.workspace }}/../libs/liboqs/build"
+
+      # ── zuno ───────────────────────────────────────────────────────────
+      - name: Build (release + debug + utils)
+        run: make all
+
+      - name: Check (test suite + coverage)
+        run: make check
+
+      # ── artifacts ──────────────────────────────────────────────────────
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: build/cov/html/
+          if-no-files-found: ignore
