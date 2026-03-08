@@ -168,7 +168,7 @@ to how `git checkout` works.
 | Value | Constant | Rule enforced by `verify_consensus()` |
 |---|---|---|
 | `0` | `CONSENSUS_POW` | Hash must have ≥ `DIFFICULTY` leading hex zeros |
-| `1` | `CONSENSUS_POS` | Hash integrity only; VRF + Dilithium pending ADR-003 |
+| `1` | `CONSENSUS_POS` | Hash integrity + proposer stake + VRF proof + Dilithium-3 signature (ADR-003) |
 
 `commit` (CLI) always sets `CONSENSUS_POW` and calls `mine_block()`.
 `chain_validate()` calls `verify_consensus()` for every `chain_add()`.
@@ -409,7 +409,7 @@ hash of their content plus their parent's hash.
 | `git status` | `zuno status` — show chain tip and staged transactions |
 | `git add <file>` | `zuno send --from X --to Y --amount N` — stage a transaction |
 | `git commit` | `zuno commit` — seal staged transactions into a new block |
-| `git commit -S` | `zuno commit` + Dilithium signing — sign block (ADR-003, pending) |
+| `git commit -S` | `zuno commit` + Dilithium signing — sign block via `block_sign()` (ADR-003) |
 | `git push` | `zuno propose` — broadcast block to peers |
 | `git log` | `zuno log [--limit N]` — list blocks newest-first |
 | `git show <hash>` | `zuno show <hash>` — human-readable block detail |
@@ -506,7 +506,7 @@ boots onto the canonical branch, even after storing competing blocks from peers.
 | Mode | Weight per block | Notes |
 |---|---|---|
 | PoW (`consensus == 0`) | 1 | Uniform — every block counts equally |
-| PoS (`consensus == 1`) | 1 | Placeholder — will use proposer stake once ADR-003 validator registry is implemented |
+| PoS (`consensus == 1`) | 1 | Uniform for now; future upgrade to proposer-stake weight |
 
 **Tests:** 6 new tests in `tests/test_chain.c` under the `fork_choice` group —
 null guard, genesis-only (no-op), linear chain (no reorg), heavy-branch-wins
@@ -516,7 +516,7 @@ null guard, genesis-only (no-op), linear chain (no reorg), heavy-branch-wins
 
 ### ADR-003: Proposer Requirements — Stake + VRF + Dilithium
 
-**Date:** 2025-03 · **Status:** Adopted (design); partially implemented
+**Date:** 2025-03 · **Status:** Implemented
 
 #### Context
 
@@ -573,13 +573,17 @@ Block accepted → GHOST subtree weight updated
 | Transaction signing (Dilithium-3) | Implemented | `src/transaction.c` |
 | Validator registry (keys + stake) | Implemented | `src/validator.c` — ADR-017 |
 | Stake check in PoS consensus | Implemented | `src/consensus.c` `verify_pos_rules()` |
-| Block-level signature (`verify_block_signature`) | Stub — `EXIT_FAILURE` | `src/consensus.c` |
-| VRF leader selection | Pending | Build from PQC primitives; Algorand VRF reference |
-| Dilithium-3 block signatures | Pending | Wire into `verify_block_signature()` once VRF is done |
+| Block-level signature (`block_sign` / `block_verify_sig`) | Implemented | `src/block.c` |
+| VRF leader selection | Implemented | `src/vrf.c` — ADR-018 |
+| Dilithium-3 block signatures in PoS consensus | Implemented | `src/consensus.c` `verify_pos_rules()` |
 
-- **Validator registry** is now live — see ADR-017.
-- **VRF** is not directly provided by `liboqs` but can be constructed from PQC
-  primitives. Algorand's VRF construction is a useful reference.
+All ADR-003 components are fully wired in `verify_pos_rules()`:
+hash integrity → proposer_id check → registry load → proposer lookup →
+stake check → VRF proof verify → Dilithium-3 block signature verify.
+
+Block struct extended with `proposer_id[65]`, `VRFProof vrf_proof`,
+`proposer_sig[MAX_SIGNATURE_LENGTH]`, and `proposer_sig_len`.
+
 - This design is architecturally equivalent to a simplified Ethereum Beacon
   Chain (LMD-GHOST + Casper-FFG stake).
 
@@ -1055,12 +1059,13 @@ which checks both the leading-zero difficulty target and `block_verify_hash()`.
 
 #### Decision — PoS Rules (with Security Stubs)
 
-`verify_pos_rules()` currently enforces hash integrity only:
+`verify_pos_rules()` enforces the full ADR-003 pipeline:
 
 ```c
-/* TODO (ADR-003): verify VRF proof — proposer must hold the slot token. */
-/* TODO (ADR-003): verify Dilithium-3 block signature. */
-/* TODO (ADR-002): verify proposer has sufficient registered stake. */
+/* 1. Hash integrity */
+/* 2. Proposer: registry lookup + stake check */
+/* 3. VRF proof: proposer was elected for this slot */
+/* 4. Dilithium-3 block signature: proposer endorsed this specific block */
 ```
 
 These stubs are present and accounted for — not silent omissions.
@@ -1087,10 +1092,10 @@ if (verify_consensus(block) != EXIT_SUCCESS) {
 | `verify_signature()` undefined symbol | `verify_block_signature()` stub returns EXIT_FAILURE |
 | Unknown types silently accepted | Bounds check rejects unknown types |
 
-#### Pending Security Work (ADR-003)
+#### Security Work Completed (ADR-003)
 
-1. VRF leader election — slot token proof verification
-2. Dilithium-3 block signatures — wire `verify_block_signature()` to key registry
+1. VRF leader election — slot token proof verification via `vrf_verify()`
+2. Dilithium-3 block signatures — `block_sign()` / `block_verify_sig()` in `src/block.c`
 3. Stake threshold — minimum stake before a validator can propose
 4. Equivocation guard — prevent proposing two blocks for the same slot
 
@@ -1675,8 +1680,7 @@ If the registry cannot be loaded, the stake check is skipped with a `log_warn`
 ### ADR-018 VRF Leader Selection — Slot-Based, Stake-Weighted, Dilithium-3 Proven
 
 **Status:** Implemented (`src/vrf.c`, `inc/vrf.h`, `tests/test_vrf.c`).
-Integration into `verify_pos_rules()` pending Block struct extension (ADR-003
-phase 2).
+Fully integrated into `verify_pos_rules()` (ADR-003 complete).
 
 #### Context
 
@@ -1754,7 +1758,7 @@ Any failure causes `vrf_verify()` to return `EXIT_FAILURE` with a `log_warn`.
 - A `char proposer_id[VALIDATOR_ID_SIZE]` field in `Block` (or derive from
   `transactions[0].sender` as a temporary approximation).
 
-Both changes are tracked under ADR-003 phase 2.
+Both changes were implemented as part of ADR-003 (complete).
 
 #### Renamed: `Validator` → `PosEntry` in `pos.h`
 
@@ -1791,9 +1795,7 @@ Items that are designed (ADR adopted) but not yet implemented:
 
 ### High Priority
 
-| Work Item | ADR | Location |
-|---|---|---|
-| Dilithium-3 block signatures | ADR-003 | Wire `verify_block_signature()` and `vrf_verify()` into `consensus.c`; requires Block struct extension (proposer_id + VRFProof fields) |
+_(No items — all ADR-003 PoS signature work is complete.)_
 
 ### Medium Priority
 

@@ -20,7 +20,40 @@
 #include "consensus.h"
 #include "storage.h"
 #include "crypto.h"
+#include "validator.h"
+#include "vrf.h"
+#include "sha256.h"
 #include "log.h"
+
+#include <oqs/oqs.h>
+
+/* ── module-level test proposer keypair (generated once in main) ──────── */
+
+static uint8_t  g_proposer_pk[MAX_PUBLIC_KEY_LENGTH];
+static uint8_t *g_proposer_sk     = NULL;
+static size_t   g_proposer_sk_len = 0;
+
+static void init_test_proposer(void) {
+  OQS_SIG *sig = OQS_SIG_new(OQS_SIG_alg_dilithium_3);
+  assert_non_null(sig);
+  g_proposer_sk_len = sig->length_secret_key;
+  g_proposer_sk     = malloc(g_proposer_sk_len);
+  assert_non_null(g_proposer_sk);
+  OQS_SIG_keypair(sig, g_proposer_pk, g_proposer_sk);
+  OQS_SIG_free(sig);
+}
+
+static void register_test_proposer(void) {
+  ValidatorRegistry *reg = validator_registry_load();
+  assert_non_null(reg);
+  Validator v;
+  memset(&v, 0, sizeof v);
+  strncpy(v.id, "test-proposer", VALIDATOR_ID_SIZE - 1);
+  memcpy(v.public_key, g_proposer_pk, MAX_PUBLIC_KEY_LENGTH);
+  v.stake = VALIDATOR_MIN_STAKE;
+  assert_int_equal(validator_register(reg, &v), EXIT_SUCCESS);
+  validator_registry_free(reg);
+}
 
 /* ── helpers ──────────────────────────────────────────────────────────── */
 
@@ -33,9 +66,24 @@
 static Block *make_next(uint32_t index, const unsigned char *prev_hash) {
   Block *b = block_create(index, prev_hash);
   assert_non_null(b);
-  b->timestamp  = (time_t)(1700000000 + index);
-  b->consensus  = CONSENSUS_POS;
-  assert_int_equal(block_compute_hash(b), EXIT_SUCCESS);
+  b->timestamp = (time_t)(1700000000 + index);
+  b->consensus = CONSENSUS_POS;
+
+  /* Build the VRF slot message from index + prev_hash raw bytes. */
+  uint8_t prev_raw[SHA256_DIGEST_LEN];
+  memset(prev_raw, 0, SHA256_DIGEST_LEN);
+  if (prev_hash && strlen((const char *)prev_hash) == SHA256_HEX_LEN)
+    sha256_from_hex((const char *)prev_hash, prev_raw, SHA256_DIGEST_LEN);
+
+  uint8_t  slot_msg[VRF_OUTPUT_LEN];
+  VRFProof proof;
+  vrf_slot_message((uint64_t)index, prev_raw, slot_msg);
+  assert_int_equal(vrf_prove("test-proposer", slot_msg,
+                             g_proposer_sk, g_proposer_sk_len, &proof),
+                   EXIT_SUCCESS);
+  assert_int_equal(block_sign(b, "test-proposer",
+                              g_proposer_sk, g_proposer_sk_len, &proof),
+                   EXIT_SUCCESS);
   return b;
 }
 
@@ -53,6 +101,7 @@ static int setup_loaded(void **state) {
   system("rm -rf .chain");
   Chain *c = chain_load();
   assert_non_null(c);
+  register_test_proposer();
   *state = c;
   return 0;
 }
@@ -386,6 +435,7 @@ static void test_propose_no_peers(void **state) {
 
 int main(void) {
   log_set_stream(stderr);
+  init_test_proposer();
 
   const struct CMUnitTest load_tests[] = {
     cmocka_unit_test_setup_teardown(test_load_creates_genesis,   setup_empty, teardown_empty),

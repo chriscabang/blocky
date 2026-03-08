@@ -200,3 +200,11 @@ int validator_check_stake(const ValidatorRegistry *reg, const char *id) {
 unsigned int validator_count(const ValidatorRegistry *reg) {
   return reg ? reg->count : 0;
 }
+
+uint64_t validator_total_stake(const ValidatorRegistry *reg) {
+  if (!reg) return 0;
+  uint64_t total = 0;
+  for (unsigned int i = 0; i < reg->count; i++)
+    total += reg->entries[i].stake;
+  return total;
+}

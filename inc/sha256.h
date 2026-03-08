@@ -43,4 +43,12 @@ void sha256_digest(const void *data, size_t len,
  */
 void sha256_to_hex(const uint8_t *bytes, size_t len, char *out);
 
+/**
+ * Decode a lowercase hex string into raw bytes.
+ * @param hex  NUL-terminated hex string (at least len*2 chars)
+ * @param out  output buffer (len bytes)
+ * @param len  number of OUTPUT bytes to decode
+ */
+void sha256_from_hex(const char *hex, uint8_t *out, size_t len);
+
 #endif /* SHA256_H */

@@ -1,10 +1,10 @@
 /**
  * @file crypto.h
- * @brief Block hashing, Merkle root, and signature stubs.
+ * @brief Block hashing and Merkle root.
  *
  * Hashing uses the built-in SHA-256 implementation (sha256.h/.c).
- * OpenSSL is NOT used here. Signing stubs are pending Dilithium
- * integration via liboqs (see ADR-003).
+ * OpenSSL is NOT used here. Block signing and signature verification
+ * are in block.h / block.c (Dilithium-3 via liboqs, ADR-003).
  */
 
 #ifndef CRYPTO_H
@@ -20,7 +20,7 @@
  * @brief Compute the SHA-256 hash of a block and store it in block->hash.
  *
  * Feeds the following fields into SHA-256 in order:
- *   index, timestamp, previous_hash, merkle_root, nonce, consensus
+ *   index, timestamp, previous_hash, merkle_root, nonce, consensus, proposer_id
  *
  * Does NOT read block->hash as input (avoids circular dependency).
  * Does NOT compute the Merkle root — call compute_merkle_root() first
@@ -42,23 +42,5 @@ int block_hash(Block *block);
  * @param merkle_root  Caller-provided buffer of at least HASH_SIZE bytes.
  */
 void compute_merkle_root(const Block *block, char *merkle_root);
-
-/**
- * @brief Sign a block with a Dilithium private key (stub).
- *
- * Not yet implemented — pending liboqs Dilithium integration (ADR-003).
- *
- * @return EXIT_FAILURE always.
- */
-int block_sign(Block *block, const char *private_key, char *signature);
-
-/**
- * @brief Verify a block's Dilithium signature (stub).
- *
- * Not yet implemented — pending liboqs Dilithium integration (ADR-003).
- *
- * @return EXIT_FAILURE always.
- */
-int block_verify_sig(const Block *block, const char *public_key);
 
 #endif /* CRYPTO_H */

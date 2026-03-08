@@ -104,4 +104,12 @@ int validator_check_stake(const ValidatorRegistry *reg, const char *id);
  */
 unsigned int validator_count(const ValidatorRegistry *reg);
 
+/**
+ * @brief Compute the sum of all validators' stakes.
+ *
+ * Used by VRF election: is_elected = (hash % total_stake) < validator_stake.
+ * Returns 0 if reg is NULL or the registry is empty.
+ */
+uint64_t validator_total_stake(const ValidatorRegistry *reg);
+
 #endif /* VALIDATOR_H */

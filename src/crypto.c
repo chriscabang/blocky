@@ -71,6 +71,8 @@ int block_hash(Block *block) {
                   strlen((const char *)block->merkle_root));
     sha256_update(&ctx, &block->nonce,       sizeof(block->nonce));
     sha256_update(&ctx, &block->consensus,   sizeof(block->consensus));
+    sha256_update(&ctx, block->proposer_id,
+                  strlen((const char *)block->proposer_id));
 
     uint8_t digest[SHA256_DIGEST_LEN];
     sha256_final(&ctx, digest);
@@ -81,17 +83,3 @@ int block_hash(Block *block) {
     return EXIT_SUCCESS;
 }
 
-int block_sign(Block *block, const char *private_key, char *signature) {
-    (void)block;
-    (void)private_key;
-    (void)signature;
-    log_error("block_sign: not implemented — pending Dilithium integration (ADR-003)");
-    return EXIT_FAILURE;
-}
-
-int block_verify_sig(const Block *block, const char *public_key) {
-    (void)block;
-    (void)public_key;
-    log_error("block_verify_sig: not implemented — pending Dilithium integration (ADR-003)");
-    return EXIT_FAILURE;
-}

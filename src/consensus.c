@@ -1,6 +1,8 @@
 /* consensus.c — consensus routing: PoW and PoS block validation. */
 #include "consensus.h"
 #include "validator.h"
+#include "vrf.h"
+#include "sha256.h"
 #include "pow.h"
 #include "block.h"
 #include "log.h"
@@ -25,15 +27,7 @@ static int verify_pow_rules(const Block *block) {
 }
 
 /*
- * PoS rules: the stored hash must match the block's fields (hash integrity).
- *
- * Three security checks are required but deferred to ADR-003:
- *   - VRF proof: the proposer must hold the slot token for this round.
- *   - Dilithium-3 block signature (verify_block_signature).
- *   - Stake check: the proposer must have sufficient stake on record.
- *
- * Hash integrity is enforced now; the stubs below mark where the remaining
- * checks must be inserted before PoS is production-ready.
+ * PoS rules: hash integrity + proposer identity + VRF proof + block signature.
  */
 static int verify_pos_rules(const Block *block) {
     /* 1. Hash integrity — always required. */
@@ -43,44 +37,69 @@ static int verify_pos_rules(const Block *block) {
         return EXIT_FAILURE;
     }
 
-    /*
-     * 2. Stake check — proposer must have minimum stake in the registry.
-     *
-     * The proposer ID is read from block->transactions[0].sender when at least
-     * one transaction is present. Blocks with no transactions (e.g. genesis or
-     * empty PoS blocks) skip the stake check until a dedicated proposer-ID
-     * field is added to Block (ADR-003).
-     */
-    if (block->transaction_count > 0) {
-        ValidatorRegistry *reg = validator_registry_load();
-        if (reg) {
-            const char *proposer = block->transactions[0].sender;
-            if (validator_check_stake(reg, proposer) != EXIT_SUCCESS) {
-                log_warn("verify_consensus: PoS block %u proposer '%s' "
-                         "has insufficient stake", block->index, proposer);
-                validator_registry_free(reg);
-                return EXIT_FAILURE;
-            }
-            validator_registry_free(reg);
-        } else {
-            log_warn("verify_consensus: could not load validator registry "
-                     "for block %u; skipping stake check", block->index);
-        }
+    /* 2. Proposer checks: every PoS block must identify its proposer. */
+    if (block->proposer_id[0] == '\0') {
+        log_warn("verify_consensus: PoS block %u has no proposer_id",
+                 block->index);
+        return EXIT_FAILURE;
     }
 
-    /*
-     * TODO (ADR-003 phase 2): verify VRF proof and Dilithium-3 block signature.
-     *
-     * vrf.h / vrf.c are implemented and unit-tested.  Integration here requires
-     * the Block struct to carry a VRFProof field (proposer slot commitment) and
-     * a proposer_id field — both pending the ADR-003 Block extension.
-     *
-     * When available:
-     *   vrf_verify(proposer_id, slot_msg, &block->vrf_proof,
-     *              proposer_pk, pk_len, stake, total_stake);
-     *   verify_block_signature(block);   — Dilithium-3 over block fields
-     */
+    ValidatorRegistry *reg = validator_registry_load();
+    if (!reg) {
+        log_warn("verify_consensus: cannot load validator registry for block %u",
+                 block->index);
+        return EXIT_FAILURE;
+    }
 
+    const Validator *proposer = validator_lookup(reg, block->proposer_id);
+    if (!proposer) {
+        log_warn("verify_consensus: proposer '%s' not in registry (block %u)",
+                 block->proposer_id, block->index);
+        validator_registry_free(reg);
+        return EXIT_FAILURE;
+    }
+
+    /* 2a. Stake check. */
+    if (validator_check_stake(reg, block->proposer_id) != EXIT_SUCCESS) {
+        log_warn("verify_consensus: proposer '%s' has insufficient stake (block %u)",
+                 block->proposer_id, block->index);
+        validator_registry_free(reg);
+        return EXIT_FAILURE;
+    }
+
+    /* 2b. VRF proof: proposer was elected for this slot. */
+    uint64_t total = validator_total_stake(reg);
+    uint8_t  prev_raw[SHA256_DIGEST_LEN];
+    uint8_t  slot_msg[VRF_OUTPUT_LEN];
+
+    /* For genesis previous_hash ("0"), treat as all-zero raw bytes. */
+    memset(prev_raw, 0, SHA256_DIGEST_LEN);
+    if (strlen((const char *)block->previous_hash) == SHA256_HEX_LEN) {
+        sha256_from_hex((const char *)block->previous_hash,
+                        prev_raw, SHA256_DIGEST_LEN);
+    }
+    vrf_slot_message((uint64_t)block->index, prev_raw, slot_msg);
+
+    if (vrf_verify(block->proposer_id, slot_msg, &block->vrf_proof,
+                   proposer->public_key, sizeof(proposer->public_key),
+                   proposer->stake, total) != EXIT_SUCCESS) {
+        log_error("verify_consensus: VRF proof invalid for block %u proposer '%s'",
+                  block->index, block->proposer_id);
+        validator_registry_free(reg);
+        return EXIT_FAILURE;
+    }
+
+    /* 2c. Block signature: proposer endorsed this specific block. */
+    if (block_verify_sig(block,
+                         proposer->public_key,
+                         sizeof(proposer->public_key)) != EXIT_SUCCESS) {
+        log_error("verify_consensus: block signature invalid for block %u",
+                  block->index);
+        validator_registry_free(reg);
+        return EXIT_FAILURE;
+    }
+
+    validator_registry_free(reg);
     return EXIT_SUCCESS;
 }
 
@@ -103,15 +122,33 @@ static const consensus_fn VERIFY[] = {
 /* ── public API ───────────────────────────────────────────────────────── */
 
 int verify_block_signature(const Block *block) {
-    (void)block;
-    /*
-     * Stub: full Dilithium-3 proposer signature verification is pending
-     * ADR-003 (validator key registry + VRF leader selection).
-     * Returns EXIT_FAILURE so unsigned blocks cannot pass until the key
-     * registry is operational.
-     */
-    log_warn("verify_block_signature: not yet implemented (ADR-003)");
-    return EXIT_FAILURE;
+    if (!block || block->proposer_id[0] == '\0') {
+        log_warn("verify_block_signature: NULL block or no proposer_id");
+        return EXIT_FAILURE;
+    }
+    if (block->proposer_sig_len == 0) {
+        log_warn("verify_block_signature: block %u has no signature",
+                 block->index);
+        return EXIT_FAILURE;
+    }
+
+    ValidatorRegistry *reg = validator_registry_load();
+    if (!reg) {
+        log_error("verify_block_signature: cannot load validator registry");
+        return EXIT_FAILURE;
+    }
+
+    const Validator *v = validator_lookup(reg, block->proposer_id);
+    if (!v) {
+        log_warn("verify_block_signature: proposer '%s' not in registry",
+                 block->proposer_id);
+        validator_registry_free(reg);
+        return EXIT_FAILURE;
+    }
+
+    int rc = block_verify_sig(block, v->public_key, sizeof(v->public_key));
+    validator_registry_free(reg);
+    return rc;
 }
 
 int verify_consensus(const Block *block) {

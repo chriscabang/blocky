@@ -8,6 +8,7 @@
  */
 
 #include "sha256.h"
+#include <stdio.h>
 #include <string.h>
 
 /* ── FIPS 180-4 § 4.1.2: bit functions and σ / Σ ─────────────────────── */
@@ -168,4 +169,14 @@ void sha256_digest(const void *data, size_t len,
     sha256_init(&ctx);
     sha256_update(&ctx, data, len);
     sha256_final(&ctx, out);
+}
+
+void sha256_from_hex(const char *hex, uint8_t *out, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        unsigned int b = 0;
+        /* sscanf with %02x reads exactly 2 hex chars */
+        (void)sscanf(hex + i * 2, "%02x", &b);
+        out[i] = (uint8_t)b;
+    }
 }

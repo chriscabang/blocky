@@ -281,6 +281,27 @@ static void test_count_after_register(void **state)
   assert_int_equal(validator_count(reg), 3);
 }
 
+/* ── registry/total_stake ─────────────────────────────────────────────── */
+
+static void test_total_stake_null(void **state)
+{
+  (void)state;
+  assert_int_equal((int)validator_total_stake(NULL), 0);
+}
+
+static void test_total_stake_sum(void **state)
+{
+  ValidatorRegistry *reg = *state;
+  assert_int_equal((uint64_t)validator_total_stake(reg), 0);
+
+  Validator a = make_validator("s1", 3 * MICRO_PER_TOKEN);
+  Validator b = make_validator("s2", 7 * MICRO_PER_TOKEN);
+  validator_register(reg, &a);
+  validator_register(reg, &b);
+
+  assert_int_equal((uint64_t)validator_total_stake(reg), 10 * MICRO_PER_TOKEN);
+}
+
 /* ── main ─────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -321,11 +342,17 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_count_after_register, setup_loaded, teardown),
   };
 
+  const struct CMUnitTest total_stake_tests[] = {
+    cmocka_unit_test_setup_teardown(test_total_stake_null, setup_empty,  teardown_empty),
+    cmocka_unit_test_setup_teardown(test_total_stake_sum,  setup_loaded, teardown),
+  };
+
   int failures = 0;
-  failures += cmocka_run_group_tests_name("registry/load",     load_tests,     NULL, NULL);
-  failures += cmocka_run_group_tests_name("registry/register", register_tests, NULL, NULL);
-  failures += cmocka_run_group_tests_name("registry/lookup",   lookup_tests,   NULL, NULL);
-  failures += cmocka_run_group_tests_name("registry/stake",    stake_tests,    NULL, NULL);
-  failures += cmocka_run_group_tests_name("registry/count",    count_tests,    NULL, NULL);
+  failures += cmocka_run_group_tests_name("registry/load",         load_tests,         NULL, NULL);
+  failures += cmocka_run_group_tests_name("registry/register",     register_tests,     NULL, NULL);
+  failures += cmocka_run_group_tests_name("registry/lookup",       lookup_tests,       NULL, NULL);
+  failures += cmocka_run_group_tests_name("registry/stake",        stake_tests,        NULL, NULL);
+  failures += cmocka_run_group_tests_name("registry/count",        count_tests,        NULL, NULL);
+  failures += cmocka_run_group_tests_name("registry/total_stake",  total_stake_tests,  NULL, NULL);
   return failures;
 }

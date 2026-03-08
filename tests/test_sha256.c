@@ -386,6 +386,56 @@ static void test_ctx_reuse_after_init(void **state)
     assert_memory_equal(second_digest, nist_abc, SHA256_DIGEST_LEN);
 }
 
+/* ── sha256/hex_codec — sha256_from_hex round-trip ───────────────────── */
+
+/* Encoding raw bytes to hex then decoding must give back the original. */
+static void test_from_hex_round_trip(void **state)
+{
+    (void)state;
+    static const uint8_t original[SHA256_DIGEST_LEN] = {
+        0x00,0x11,0x22,0x33, 0x44,0x55,0x66,0x77,
+        0x88,0x99,0xaa,0xbb, 0xcc,0xdd,0xee,0xff,
+        0x01,0x23,0x45,0x67, 0x89,0xab,0xcd,0xef,
+        0xfe,0xdc,0xba,0x98, 0x76,0x54,0x32,0x10,
+    };
+    char hex[SHA256_HEX_LEN + 1];
+    sha256_to_hex(original, SHA256_DIGEST_LEN, hex);
+
+    uint8_t decoded[SHA256_DIGEST_LEN];
+    sha256_from_hex(hex, decoded, SHA256_DIGEST_LEN);
+    assert_memory_equal(original, decoded, SHA256_DIGEST_LEN);
+}
+
+/* All-zero bytes must decode from "000...0" hex string correctly. */
+static void test_from_hex_all_zeros(void **state)
+{
+    (void)state;
+    static const char hex[SHA256_HEX_LEN + 1] =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+    uint8_t out[SHA256_DIGEST_LEN];
+    sha256_from_hex(hex, out, SHA256_DIGEST_LEN);
+    uint8_t expected[SHA256_DIGEST_LEN];
+    memset(expected, 0, sizeof(expected));
+    assert_memory_equal(out, expected, SHA256_DIGEST_LEN);
+}
+
+/* Known SHA-256("abc") hex must decode to the NIST raw bytes. */
+static void test_from_hex_known_vector(void **state)
+{
+    (void)state;
+    static const char nist_hex[] =
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    static const uint8_t nist_bytes[SHA256_DIGEST_LEN] = {
+        0xba,0x78,0x16,0xbf, 0x8f,0x01,0xcf,0xea,
+        0x41,0x41,0x40,0xde, 0x5d,0xae,0x22,0x23,
+        0xb0,0x03,0x61,0xa3, 0x96,0x17,0x7a,0x9c,
+        0xb4,0x10,0xff,0x61, 0xf2,0x00,0x15,0xad,
+    };
+    uint8_t out[SHA256_DIGEST_LEN];
+    sha256_from_hex(nist_hex, out, SHA256_DIGEST_LEN);
+    assert_memory_equal(out, nist_bytes, SHA256_DIGEST_LEN);
+}
+
 /* ── main ─────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -420,10 +470,17 @@ int main(void)
         cmocka_unit_test_setup_teardown(test_ctx_reuse_after_init,  setup, teardown),
     };
 
+    const struct CMUnitTest hex_codec_tests[] = {
+        cmocka_unit_test_setup_teardown(test_from_hex_round_trip,   setup, teardown),
+        cmocka_unit_test_setup_teardown(test_from_hex_all_zeros,    setup, teardown),
+        cmocka_unit_test_setup_teardown(test_from_hex_known_vector, setup, teardown),
+    };
+
     int failures = 0;
     failures += cmocka_run_group_tests_name("sha256/nist",        nist_tests,        NULL, NULL);
     failures += cmocka_run_group_tests_name("sha256/padding",     padding_tests,     NULL, NULL);
     failures += cmocka_run_group_tests_name("sha256/incremental", incremental_tests, NULL, NULL);
     failures += cmocka_run_group_tests_name("sha256/security",    security_tests,    NULL, NULL);
+    failures += cmocka_run_group_tests_name("sha256/hex_codec",   hex_codec_tests,   NULL, NULL);
     return failures;
 }

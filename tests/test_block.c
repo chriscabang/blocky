@@ -16,8 +16,12 @@
 #include <string.h>
 
 #include "block.h"
+#include "consensus.h"
 #include "crypto.h"
 #include "log.h"
+#include "vrf.h"
+#include "validator.h"
+#include <oqs/oqs.h>
 
 /* ── setup / teardown ─────────────────────────────────────────────────── */
 
@@ -162,6 +166,163 @@ static void test_free_valid(void **state) {
   block_free(b); /* must not crash or leak */
 }
 
+/* ── block/sign and block/verify_sig ─────────────────────────────────── */
+
+typedef struct {
+  uint8_t  pk[MAX_PUBLIC_KEY_LENGTH];
+  uint8_t *sk;
+  size_t   sk_len;
+  Block   *block;
+  VRFProof proof;
+} SignState;
+
+static int setup_sign(void **state)
+{
+  OQS_SIG *sig = OQS_SIG_new(OQS_SIG_alg_dilithium_3);
+  if (!sig) return -1;
+
+  SignState *ss = calloc(1, sizeof *ss);
+  if (!ss) { OQS_SIG_free(sig); return -1; }
+  ss->sk_len = sig->length_secret_key;
+  ss->sk     = malloc(ss->sk_len);
+  if (!ss->sk) { free(ss); OQS_SIG_free(sig); return -1; }
+  OQS_SIG_keypair(sig, ss->pk, ss->sk);
+  OQS_SIG_free(sig);
+
+  /* Build a block with a computed hash (no proposer_id yet). */
+  ss->block = block_create(1, NULL);
+  if (!ss->block) { free(ss->sk); free(ss); return -1; }
+  ss->block->timestamp = 1700000000;
+  ss->block->consensus = CONSENSUS_POS;
+  block_compute_hash(ss->block);
+
+  /* Build a VRF proof for the block slot. */
+  uint8_t prev[SHA256_DIGEST_LEN] = {0};
+  uint8_t slot_msg[VRF_OUTPUT_LEN];
+  vrf_slot_message(1, prev, slot_msg);
+  vrf_prove("alice", slot_msg, ss->sk, ss->sk_len, &ss->proof);
+
+  *state = ss;
+  return 0;
+}
+
+static int teardown_sign(void **state)
+{
+  SignState *ss = *state;
+  if (ss) {
+    block_free(ss->block);
+    free(ss->sk);
+    free(ss);
+    *state = NULL;
+  }
+  return 0;
+}
+
+/* ── block/sign ───────────────────────────────────────────────────────── */
+
+static void test_sign_null_block(void **state)
+{
+  SignState *ss = *state;
+  assert_int_equal(block_sign(NULL, "alice", ss->sk, ss->sk_len, &ss->proof),
+                   EXIT_FAILURE);
+}
+
+static void test_sign_null_id(void **state)
+{
+  SignState *ss = *state;
+  assert_int_equal(block_sign(ss->block, NULL, ss->sk, ss->sk_len, &ss->proof),
+                   EXIT_FAILURE);
+}
+
+static void test_sign_empty_id(void **state)
+{
+  SignState *ss = *state;
+  assert_int_equal(block_sign(ss->block, "", ss->sk, ss->sk_len, &ss->proof),
+                   EXIT_FAILURE);
+}
+
+static void test_sign_null_sk(void **state)
+{
+  SignState *ss = *state;
+  assert_int_equal(block_sign(ss->block, "alice", NULL, 0, &ss->proof),
+                   EXIT_FAILURE);
+}
+
+static void test_sign_null_proof(void **state)
+{
+  SignState *ss = *state;
+  assert_int_equal(block_sign(ss->block, "alice", ss->sk, ss->sk_len, NULL),
+                   EXIT_FAILURE);
+}
+
+/* Valid sign: proposer_id set, sig_len > 0, hash integrity preserved. */
+static void test_sign_valid(void **state)
+{
+  SignState *ss = *state;
+  assert_int_equal(block_sign(ss->block, "alice", ss->sk, ss->sk_len, &ss->proof),
+                   EXIT_SUCCESS);
+  assert_string_equal(ss->block->proposer_id, "alice");
+  assert_true(ss->block->proposer_sig_len > 0);
+  /* Hash must be valid after block_sign recomputes it. */
+  assert_int_equal(block_verify_hash(ss->block), EXIT_SUCCESS);
+}
+
+/* block_sign must include proposer_id in the hash — different IDs → different hashes. */
+static void test_sign_id_changes_hash(void **state)
+{
+  SignState *ss = *state;
+
+  /* Sign as "alice" */
+  assert_int_equal(block_sign(ss->block, "alice", ss->sk, ss->sk_len, &ss->proof),
+                   EXIT_SUCCESS);
+  unsigned char hash_alice[HASH_SIZE];
+  memcpy(hash_alice, ss->block->hash, HASH_SIZE);
+
+  /* Re-sign the block as "bob" — hash must differ. */
+  assert_int_equal(block_sign(ss->block, "bob", ss->sk, ss->sk_len, &ss->proof),
+                   EXIT_SUCCESS);
+  assert_memory_not_equal(hash_alice, ss->block->hash, HASH_SIZE);
+}
+
+/* ── block/verify_sig ─────────────────────────────────────────────────── */
+
+static void test_verify_sig_null_block(void **state)
+{
+  SignState *ss = *state;
+  assert_int_equal(block_verify_sig(NULL, ss->pk, MAX_PUBLIC_KEY_LENGTH),
+                   EXIT_FAILURE);
+}
+
+static void test_verify_sig_unsigned(void **state)
+{
+  SignState *ss = *state;
+  /* Block has not been signed: proposer_sig_len == 0. */
+  assert_int_equal(block_verify_sig(ss->block, ss->pk, MAX_PUBLIC_KEY_LENGTH),
+                   EXIT_FAILURE);
+}
+
+static void test_verify_sig_valid(void **state)
+{
+  SignState *ss = *state;
+  assert_int_equal(block_sign(ss->block, "alice", ss->sk, ss->sk_len, &ss->proof),
+                   EXIT_SUCCESS);
+  assert_int_equal(block_verify_sig(ss->block, ss->pk, MAX_PUBLIC_KEY_LENGTH),
+                   EXIT_SUCCESS);
+}
+
+static void test_verify_sig_tampered_hash(void **state)
+{
+  SignState *ss = *state;
+  assert_int_equal(block_sign(ss->block, "alice", ss->sk, ss->sk_len, &ss->proof),
+                   EXIT_SUCCESS);
+  /* Tamper with nonce — the stored hash is now stale (covers different data). */
+  ss->block->nonce++;
+  assert_int_equal(block_compute_hash(ss->block), EXIT_SUCCESS);
+  /* Verify sig: sig was over old hash, now hash changed → fail. */
+  assert_int_equal(block_verify_sig(ss->block, ss->pk, MAX_PUBLIC_KEY_LENGTH),
+                   EXIT_FAILURE);
+}
+
 /* ── main ─────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -191,10 +352,29 @@ int main(void) {
     cmocka_unit_test_setup_teardown(test_free_valid, setup, teardown),
   };
 
+  const struct CMUnitTest sign_tests[] = {
+    cmocka_unit_test_setup_teardown(test_sign_null_block,      setup_sign, teardown_sign),
+    cmocka_unit_test_setup_teardown(test_sign_null_id,         setup_sign, teardown_sign),
+    cmocka_unit_test_setup_teardown(test_sign_empty_id,        setup_sign, teardown_sign),
+    cmocka_unit_test_setup_teardown(test_sign_null_sk,         setup_sign, teardown_sign),
+    cmocka_unit_test_setup_teardown(test_sign_null_proof,      setup_sign, teardown_sign),
+    cmocka_unit_test_setup_teardown(test_sign_valid,           setup_sign, teardown_sign),
+    cmocka_unit_test_setup_teardown(test_sign_id_changes_hash, setup_sign, teardown_sign),
+  };
+
+  const struct CMUnitTest verify_sig_tests[] = {
+    cmocka_unit_test_setup_teardown(test_verify_sig_null_block,    setup_sign, teardown_sign),
+    cmocka_unit_test_setup_teardown(test_verify_sig_unsigned,      setup_sign, teardown_sign),
+    cmocka_unit_test_setup_teardown(test_verify_sig_valid,         setup_sign, teardown_sign),
+    cmocka_unit_test_setup_teardown(test_verify_sig_tampered_hash, setup_sign, teardown_sign),
+  };
+
   int failures = 0;
-  failures += cmocka_run_group_tests_name("create",  create_tests,  NULL, NULL);
-  failures += cmocka_run_group_tests_name("compute", compute_tests, NULL, NULL);
-  failures += cmocka_run_group_tests_name("verify",  verify_tests,  NULL, NULL);
-  failures += cmocka_run_group_tests_name("free",    free_tests,    NULL, NULL);
+  failures += cmocka_run_group_tests_name("create",           create_tests,     NULL, NULL);
+  failures += cmocka_run_group_tests_name("compute",          compute_tests,    NULL, NULL);
+  failures += cmocka_run_group_tests_name("verify",           verify_tests,     NULL, NULL);
+  failures += cmocka_run_group_tests_name("free",             free_tests,       NULL, NULL);
+  failures += cmocka_run_group_tests_name("block/sign",       sign_tests,       NULL, NULL);
+  failures += cmocka_run_group_tests_name("block/verify_sig", verify_sig_tests, NULL, NULL);
   return failures;
 }
