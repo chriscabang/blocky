@@ -56,11 +56,11 @@ stage transactions, commit a mined block, propose it to peers.
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                   zuno CLI                    │  main.c — git-like subcommands
+│                   zuno CLI                      │  main.c — git-like subcommands
 └──────────────────────┬──────────────────────────┘
                        │
-          ┌────────────┼────────────┐
-          │            │            │
+          ┌────────────┼───────────┐
+          │            │           │
     ┌─────▼─────┐ ┌────▼────┐ ┌────▼──────┐
     │  chain.c  │ │ pow.c   │ │network.c  │
     │  pool     │ │ mining  │ │ TLS P2P   │
@@ -74,7 +74,7 @@ stage transactions, commit a mined block, propose it to peers.
     │ HEAD ref  │  │verify │  │ validate  │
     └───────────┘  └───────┘  └───────────┘
                        │
-              ┌────────┼────────┐
+              ┌────────┼───────┐
          ┌────▼───┐ ┌──▼───┐ ┌─▼──────────┐
          │sha256.c│ │crypto│ │transaction │
          │FIPS    │ │merkle│ │Dilithium-3 │
