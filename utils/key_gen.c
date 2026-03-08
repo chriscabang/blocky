@@ -1,46 +1,89 @@
-/* keygen.c — Demo: generate a persistent Dilithium-3 keypair.
+/* key_gen.c — Generate a Dilithium-3 keypair for a zuno identity.
  *
- * Usage: keygen <basename>
+ * Usage: key_gen <id>
  *
- * Writes two files:
- *   <basename>.pub   raw public key bytes  (1952 bytes, Dilithium-3)
- *   <basename>.key   raw private key bytes (4000 bytes, Dilithium-3)
+ * Writes two files into the chain's key store:
+ *   .chain/keys/<id>.pk   public key  (1952 bytes, Dilithium-3)
+ *   .chain/keys/<id>.sk   secret key  (4000 bytes, mode 0600)
  *
- * IMPORTANT: restrict the private key file immediately after generation:
- *   chmod 600 <basename>.key
- *
- * The public key is safe to share; load it into the sender / recipient
- * fields of a Transaction (see send_payment) or provide it to peers for
- * signature verification.
- *
+ * The directory .chain/keys/ is created if it does not exist.
+ * Fails if either key file already exists (no silent overwrite).
  * Private key material is zeroed in memory before the process exits.
+ *
+ * Run this once per identity before using 'zuno send':
+ *   build/utils/key_gen alice
+ *   zuno send --from alice --to bob --amount 10
  */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <sys/stat.h>
 
 #include <oqs/oqs.h>
 
-static int write_file(const char *path, const uint8_t *data, size_t len)
+#define KEYS_DIR ".chain/keys"
+
+static int ensure_dirs(void)
 {
+    if (mkdir(".chain", 0755) == -1 && errno != EEXIST) {
+        fprintf(stderr, "error: cannot create .chain: %s\n", strerror(errno));
+        return -1;
+    }
+    if (mkdir(KEYS_DIR, 0755) == -1 && errno != EEXIST) {
+        fprintf(stderr, "error: cannot create %s: %s\n",
+                KEYS_DIR, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+static int write_file(const char *path, const uint8_t *data, size_t len,
+                      mode_t mode)
+{
+    if (access(path, F_OK) == 0) {
+        fprintf(stderr, "error: file already exists: %s\n", path);
+        return -1;
+    }
     FILE *f = fopen(path, "wb");
     if (!f) {
-        fprintf(stderr, "error: cannot open %s for writing\n", path);
+        fprintf(stderr, "error: cannot open %s for writing: %s\n",
+                path, strerror(errno));
         return -1;
     }
     size_t written = fwrite(data, 1, len, f);
     fclose(f);
-    return (written == len) ? 0 : -1;
+    if (written != len) {
+        fprintf(stderr, "error: short write to %s\n", path);
+        return -1;
+    }
+    if (chmod(path, mode) != 0)
+        fprintf(stderr, "warn: chmod %o %s: %s\n", mode, path, strerror(errno));
+    return 0;
 }
 
 int main(int argc, char *argv[])
 {
     if (argc != 2) {
-        fprintf(stderr, "usage: keygen <basename>\n");
+        fprintf(stderr, "usage: key_gen <id>\n");
         return 1;
     }
 
-    const char *base = argv[1];
+    const char *id = argv[1];
+    if (id[0] == '\0') {
+        fprintf(stderr, "error: id must not be empty\n");
+        return 1;
+    }
+
+    if (ensure_dirs() != 0)
+        return 1;
+
+    char pk_path[512], sk_path[512];
+    snprintf(pk_path, sizeof(pk_path), "%s/%s.pk", KEYS_DIR, id);
+    snprintf(sk_path, sizeof(sk_path), "%s/%s.sk", KEYS_DIR, id);
 
     OQS_SIG *sig = OQS_SIG_new(OQS_SIG_alg_dilithium_3);
     if (!sig) {
@@ -65,21 +108,14 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    char pub_path[512], key_path[512];
-    snprintf(pub_path, sizeof(pub_path), "%s.pub", base);
-    snprintf(key_path, sizeof(key_path), "%s.key", base);
-
     int rc = 0;
-    if (write_file(pub_path, pub,  sig->length_public_key) != 0 ||
-        write_file(key_path, priv, sig->length_secret_key) != 0) {
-        fprintf(stderr, "error: failed to write key files\n");
+    if (write_file(pk_path, pub,  sig->length_public_key, 0644) != 0 ||
+        write_file(sk_path, priv, sig->length_secret_key, 0600) != 0) {
         rc = 1;
     } else {
-        printf("[keygen] Public key  -> %s (%zu bytes)\n",
-               pub_path, sig->length_public_key);
-        printf("[keygen] Private key -> %s (%zu bytes)\n",
-               key_path, sig->length_secret_key);
-        printf("[keygen] IMPORTANT: chmod 600 %s\n", key_path);
+        printf("Generated keypair for '%s'\n", id);
+        printf("  public key : %s\n", pk_path);
+        printf("  secret key : %s  (keep this private)\n", sk_path);
     }
 
     OQS_MEM_cleanse(priv, sig->length_secret_key);

@@ -2,11 +2,13 @@
  * @file test_wallet.c
  * @brief Unit tests for the wallet module (Dilithium-3 keypair storage).
  *
+ * Key generation is handled by the key_gen utility (build/utils/key_gen).
+ * These tests use that utility as setup wherever real key material is needed.
+ *
  * Groups:
- *   wallet/keygen    — null/empty id, valid keygen, duplicate rejection
- *   wallet/load_pk   — not found, valid load, wrong size
- *   wallet/load_sk   — not found, valid load
- *   wallet/exists    — not found, found after keygen
+ *   wallet/load_pk   — null args, not found, valid load
+ *   wallet/load_sk   — null args, not found, valid load
+ *   wallet/exists    — null, not found, found after keygen
  *   wallet/roundtrip — sign_transaction with loaded sk, verify with loaded pk
  */
 
@@ -31,6 +33,17 @@
 #include "transaction.h"
 #include "log.h"
 
+/* Path to the key_gen utility (built as part of 'make utils'). */
+#define KEY_GEN_BIN "./build/utils/key_gen"
+
+/* Generate a keypair via the key_gen utility; used as test setup. */
+static void keygen_helper(const char *id)
+{
+    char cmd[256];
+    snprintf(cmd, sizeof cmd, KEY_GEN_BIN " %s 2>/dev/null", id);
+    system(cmd);
+}
+
 /* ── setup / teardown ─────────────────────────────────────────────────── */
 
 static int setup(void **state)
@@ -46,46 +59,6 @@ static int teardown(void **state)
     (void)state;
     system("rm -rf .chain");
     return 0;
-}
-
-/* ── wallet/keygen ────────────────────────────────────────────────────── */
-
-static void test_keygen_null_id(void **state)
-{
-    (void)state;
-    assert_int_equal(wallet_keygen(NULL), EXIT_FAILURE);
-}
-
-static void test_keygen_empty_id(void **state)
-{
-    (void)state;
-    assert_int_equal(wallet_keygen(""), EXIT_FAILURE);
-}
-
-static void test_keygen_valid(void **state)
-{
-    (void)state;
-    assert_int_equal(wallet_keygen("alice"), EXIT_SUCCESS);
-    /* Both key files must exist after keygen */
-    assert_int_equal(wallet_exists("alice"), 1);
-}
-
-/* Generating the same id twice must fail (no silent overwrite). */
-static void test_keygen_duplicate(void **state)
-{
-    (void)state;
-    assert_int_equal(wallet_keygen("alice"), EXIT_SUCCESS);
-    assert_int_equal(wallet_keygen("alice"), EXIT_FAILURE);
-}
-
-/* Two different ids must coexist independently. */
-static void test_keygen_two_ids(void **state)
-{
-    (void)state;
-    assert_int_equal(wallet_keygen("alice"), EXIT_SUCCESS);
-    assert_int_equal(wallet_keygen("bob"),   EXIT_SUCCESS);
-    assert_int_equal(wallet_exists("alice"), 1);
-    assert_int_equal(wallet_exists("bob"),   1);
 }
 
 /* ── wallet/load_pk ───────────────────────────────────────────────────── */
@@ -109,7 +82,7 @@ static void test_load_pk_null_args(void **state)
 static void test_load_pk_valid(void **state)
 {
     (void)state;
-    assert_int_equal(wallet_keygen("alice"), EXIT_SUCCESS);
+    keygen_helper("alice");
     uint8_t pk[MAX_PUBLIC_KEY_LENGTH];
     memset(pk, 0, sizeof pk);
     assert_int_equal(wallet_load_pk("alice", pk, MAX_PUBLIC_KEY_LENGTH),
@@ -142,7 +115,7 @@ static void test_load_sk_null_args(void **state)
 static void test_load_sk_valid(void **state)
 {
     (void)state;
-    assert_int_equal(wallet_keygen("alice"), EXIT_SUCCESS);
+    keygen_helper("alice");
     uint8_t sk[WALLET_SK_LEN];
     memset(sk, 0, sizeof sk);
     assert_int_equal(wallet_load_sk("alice", sk, WALLET_SK_LEN), EXIT_SUCCESS);
@@ -172,7 +145,7 @@ static void test_exists_after_keygen(void **state)
 {
     (void)state;
     assert_int_equal(wallet_exists("alice"), 0);
-    assert_int_equal(wallet_keygen("alice"), EXIT_SUCCESS);
+    keygen_helper("alice");
     assert_int_equal(wallet_exists("alice"), 1);
 }
 
@@ -186,7 +159,7 @@ static void test_exists_after_keygen(void **state)
 static void test_roundtrip_sign_verify(void **state)
 {
     (void)state;
-    assert_int_equal(wallet_keygen("alice"), EXIT_SUCCESS);
+    keygen_helper("alice");
 
     Transaction tx;
     memset(&tx, 0, sizeof tx);
@@ -213,7 +186,7 @@ static void test_roundtrip_sign_verify(void **state)
 static void test_roundtrip_tampered_sig(void **state)
 {
     (void)state;
-    assert_int_equal(wallet_keygen("alice"), EXIT_SUCCESS);
+    keygen_helper("alice");
 
     Transaction tx;
     memset(&tx, 0, sizeof tx);
@@ -240,14 +213,6 @@ int main(void)
 {
     log_set_stream(stderr);
 
-    const struct CMUnitTest keygen_tests[] = {
-        cmocka_unit_test_setup_teardown(test_keygen_null_id,   setup, teardown),
-        cmocka_unit_test_setup_teardown(test_keygen_empty_id,  setup, teardown),
-        cmocka_unit_test_setup_teardown(test_keygen_valid,     setup, teardown),
-        cmocka_unit_test_setup_teardown(test_keygen_duplicate, setup, teardown),
-        cmocka_unit_test_setup_teardown(test_keygen_two_ids,   setup, teardown),
-    };
-
     const struct CMUnitTest load_pk_tests[] = {
         cmocka_unit_test_setup_teardown(test_load_pk_not_found, setup, teardown),
         cmocka_unit_test_setup_teardown(test_load_pk_null_args, setup, teardown),
@@ -261,18 +226,17 @@ int main(void)
     };
 
     const struct CMUnitTest exists_tests[] = {
-        cmocka_unit_test_setup_teardown(test_exists_not_found,   setup, teardown),
-        cmocka_unit_test_setup_teardown(test_exists_null,        setup, teardown),
+        cmocka_unit_test_setup_teardown(test_exists_not_found,    setup, teardown),
+        cmocka_unit_test_setup_teardown(test_exists_null,         setup, teardown),
         cmocka_unit_test_setup_teardown(test_exists_after_keygen, setup, teardown),
     };
 
     const struct CMUnitTest roundtrip_tests[] = {
-        cmocka_unit_test_setup_teardown(test_roundtrip_sign_verify,   setup, teardown),
-        cmocka_unit_test_setup_teardown(test_roundtrip_tampered_sig,  setup, teardown),
+        cmocka_unit_test_setup_teardown(test_roundtrip_sign_verify,  setup, teardown),
+        cmocka_unit_test_setup_teardown(test_roundtrip_tampered_sig, setup, teardown),
     };
 
     int failures = 0;
-    failures += cmocka_run_group_tests_name("wallet/keygen",    keygen_tests,    NULL, NULL);
     failures += cmocka_run_group_tests_name("wallet/load_pk",   load_pk_tests,   NULL, NULL);
     failures += cmocka_run_group_tests_name("wallet/load_sk",   load_sk_tests,   NULL, NULL);
     failures += cmocka_run_group_tests_name("wallet/exists",    exists_tests,    NULL, NULL);

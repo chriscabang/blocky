@@ -1,4 +1,18 @@
-/* wallet.h — Dilithium-3 keypair storage for user identities. */
+/* wallet.h — Dilithium-3 keypair loading for user identities.
+ *
+ * Key generation is handled by the key_gen utility (build/utils/key_gen).
+ * This module provides the path-convention layer that cmd_send and cmd_mine
+ * use to locate keys stored under .chain/keys/:
+ *
+ *   .chain/keys/<id>.pk   public key   (MAX_PUBLIC_KEY_LENGTH bytes)
+ *   .chain/keys/<id>.sk   secret key   (WALLET_SK_LEN bytes, mode 0600)
+ *
+ * To generate keys for use with 'zuno send':
+ *   build/utils/key_gen <id>
+ *   mv <id>.pub .chain/keys/<id>.pk
+ *   mv <id>.key .chain/keys/<id>.sk
+ *   chmod 600 .chain/keys/<id>.sk
+ */
 #ifndef WALLET_H
 #define WALLET_H
 
@@ -6,7 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define WALLET_DIR ".chain/keys"
+#define WALLET_DIR    ".chain/keys"
 
 /*
  * Maximum Dilithium-3 secret key length.
@@ -15,16 +29,6 @@
  * IMPORTANT: zero sk_out immediately after use to prevent key material leaks.
  */
 #define WALLET_SK_LEN 4000
-
-/*
- * Generate a Dilithium-3 keypair for 'id' and persist:
- *   .chain/keys/<id>.pk  — public key  (MAX_PUBLIC_KEY_LENGTH bytes, mode 0644)
- *   .chain/keys/<id>.sk  — secret key  (WALLET_SK_LEN bytes, mode 0600)
- *
- * Returns EXIT_FAILURE if a key with the same id already exists (will not
- * overwrite), if OQS keygen fails, or if .chain/keys/ cannot be created.
- */
-int wallet_keygen(const char *id);
 
 /*
  * Load the public key for 'id' from .chain/keys/<id>.pk into pk_out.
@@ -42,7 +46,7 @@ int wallet_load_pk(const char *id, uint8_t *pk_out, size_t pk_len);
 int wallet_load_sk(const char *id, uint8_t *sk_out, size_t sk_len);
 
 /*
- * Return 1 if a public key file exists for 'id', 0 otherwise.
+ * Return 1 if a public key file (.chain/keys/<id>.pk) exists, 0 otherwise.
  */
 int wallet_exists(const char *id);
 

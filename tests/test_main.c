@@ -7,12 +7,12 @@
  * stderr is suppressed so log_* noise does not pollute test output.
  *
  * Tests are grouped to mirror the command set:
- *   args · meta · init · status · keygen · send · mine · log · inspect
+ *   args · meta · init · status · send · mine · log · inspect
  *
  * Flow for send/mine tests:
- *   zuno keygen --id <name>    (one-time key setup)
- *   zuno send --from <name>    (sign + queue in mempool)
- *   zuno mine                  (verify sigs + PoW mine block)
+ *   build/utils/key_gen <name>   (one-time key setup via utility)
+ *   zuno send --from <name>      (sign + queue in mempool)
+ *   zuno mine                    (verify sigs + PoW mine block)
  */
 
 #include <stdarg.h>
@@ -33,7 +33,16 @@
 #include <string.h>
 #include <sys/wait.h>
 
-#define BLOCKY "./build/zuno-debug"
+#define BLOCKY   "./build/zuno-debug"
+#define KEY_GEN  "./build/utils/key_gen"
+
+/* Generate a keypair via the key_gen utility; used as test setup. */
+static void keygen(const char *id)
+{
+  char cmd[256];
+  snprintf(cmd, sizeof cmd, KEY_GEN " %s 2>/dev/null", id);
+  system(cmd);
+}
 
 /* ── helpers ──────────────────────────────────────────────────────────── */
 
@@ -133,7 +142,6 @@ static void test_help(void **state)
   assert_non_null(strstr(out, "Usage:"));
   assert_non_null(strstr(out, "send"));
   assert_non_null(strstr(out, "mine"));
-  assert_non_null(strstr(out, "keygen"));
 }
 
 static void test_propose_no_peers(void **state)
@@ -183,39 +191,11 @@ static void test_status_shows_pending(void **state)
 {
   (void)state;
   run("init", NULL, 0);
-  run("keygen --id alice", NULL, 0);
+  keygen("alice");
   run("send --from alice --to bob --amount 10", NULL, 0);
   char out[256];
   assert_int_equal(run("status", out, sizeof(out)), 0);
   assert_non_null(strstr(out, "1 transaction(s) pending"));
-}
-
-/* ── keygen ───────────────────────────────────────────────────────────── */
-
-static void test_keygen_basic(void **state)
-{
-  (void)state;
-  run("init", NULL, 0);
-  char out[256];
-  assert_int_equal(run("keygen --id alice", out, sizeof(out)), 0);
-  assert_non_null(strstr(out, "Generated keypair for 'alice'"));
-  assert_non_null(strstr(out, "alice.pk"));
-  assert_non_null(strstr(out, "alice.sk"));
-}
-
-static void test_keygen_missing_id(void **state)
-{
-  (void)state;
-  run("init", NULL, 0);
-  assert_int_equal(run("keygen", NULL, 0), 1);
-}
-
-static void test_keygen_duplicate_fails(void **state)
-{
-  (void)state;
-  run("init", NULL, 0);
-  assert_int_equal(run("keygen --id alice", NULL, 0), 0);
-  assert_int_equal(run("keygen --id alice", NULL, 0), 2); /* must fail */
 }
 
 /* ── send ─────────────────────────────────────────────────────────────── */
@@ -224,7 +204,7 @@ static void test_send_basic(void **state)
 {
   (void)state;
   run("init", NULL, 0);
-  run("keygen --id alice", NULL, 0);
+  keygen("alice");
   char out[256];
   assert_int_equal(
     run("send --from alice --to bob --amount 10", out, sizeof(out)), 0);
@@ -280,7 +260,7 @@ static void test_mine_basic(void **state)
 {
   (void)state;
   run("init", NULL, 0);
-  run("keygen --id alice", NULL, 0);
+  keygen("alice");
   run("send --from alice --to bob --amount 10", NULL, 0);
   char out[256];
   assert_int_equal(run("mine", out, sizeof(out)), 0);
@@ -291,7 +271,7 @@ static void test_mine_clears_mempool(void **state)
 {
   (void)state;
   run("init", NULL, 0);
-  run("keygen --id alice", NULL, 0);
+  keygen("alice");
   run("send --from alice --to bob --amount 10", NULL, 0);
   run("mine", NULL, 0);
   char out[256];
@@ -305,7 +285,7 @@ static void test_log_shows_all_blocks(void **state)
 {
   (void)state;
   run("init", NULL, 0);
-  run("keygen --id alice", NULL, 0);
+  keygen("alice");
   run("send --from alice --to bob --amount 10", NULL, 0);
   run("mine", NULL, 0);
   char out[512];
@@ -318,7 +298,7 @@ static void test_log_limit_respected(void **state)
 {
   (void)state;
   run("init", NULL, 0);
-  run("keygen --id alice", NULL, 0);
+  keygen("alice");
   run("send --from alice --to bob --amount 10", NULL, 0);
   run("mine", NULL, 0);
   char out[512];
@@ -333,7 +313,7 @@ static void test_show_valid_block(void **state)
 {
   (void)state;
   run("init", NULL, 0);
-  run("keygen --id alice", NULL, 0);
+  keygen("alice");
   run("send --from alice --to bob --amount 10", NULL, 0);
   char mine_out[256];
   run("mine", mine_out, sizeof(mine_out));
@@ -369,7 +349,7 @@ static void test_cat_valid_block(void **state)
 {
   (void)state;
   run("init", NULL, 0);
-  run("keygen --id alice", NULL, 0);
+  keygen("alice");
   run("send --from alice --to bob --amount 10", NULL, 0);
   char mine_out[256];
   run("mine", mine_out, sizeof(mine_out));
@@ -394,7 +374,7 @@ static void test_verify_valid_block(void **state)
 {
   (void)state;
   run("init", NULL, 0);
-  run("keygen --id alice", NULL, 0);
+  keygen("alice");
   run("send --from alice --to bob --amount 10", NULL, 0);
   char mine_out[256];
   run("mine", mine_out, sizeof(mine_out));
@@ -442,12 +422,6 @@ int main(void)
     cmocka_unit_test_setup_teardown(test_status_shows_pending, setup, teardown),
   };
 
-  const struct CMUnitTest keygen_tests[] = {
-    cmocka_unit_test_setup_teardown(test_keygen_basic,          setup, teardown),
-    cmocka_unit_test_setup_teardown(test_keygen_missing_id,     setup, teardown),
-    cmocka_unit_test_setup_teardown(test_keygen_duplicate_fails, setup, teardown),
-  };
-
   const struct CMUnitTest send_tests[] = {
     cmocka_unit_test_setup_teardown(test_send_basic,           setup, teardown),
     cmocka_unit_test_setup_teardown(test_send_missing_args,    setup, teardown),
@@ -481,7 +455,6 @@ int main(void)
   failures += cmocka_run_group_tests_name("meta",    meta_tests,    NULL, NULL);
   failures += cmocka_run_group_tests_name("init",    init_tests,    NULL, NULL);
   failures += cmocka_run_group_tests_name("status",  status_tests,  NULL, NULL);
-  failures += cmocka_run_group_tests_name("keygen",  keygen_tests,  NULL, NULL);
   failures += cmocka_run_group_tests_name("send",    send_tests,    NULL, NULL);
   failures += cmocka_run_group_tests_name("mine",    mine_tests,    NULL, NULL);
   failures += cmocka_run_group_tests_name("log",     log_tests,     NULL, NULL);

@@ -28,7 +28,6 @@ static int cmd_log(int argc, char **argv);
 static int cmd_show(int argc, char **argv);
 static int cmd_cat(int argc, char **argv);
 static int cmd_verify(int argc, char **argv);
-static int cmd_keygen(int argc, char **argv);
 static int cmd_send(int argc, char **argv);
 static int cmd_mine(int argc, char **argv);
 static int cmd_propose(int argc, char **argv);
@@ -46,7 +45,6 @@ static const Cmd CMDS[] = {
     {"show",    cmd_show},
     {"cat",     cmd_cat},
     {"verify",  cmd_verify},
-    {"keygen",  cmd_keygen},
     {"send",    cmd_send},
     {"mine",    cmd_mine},
     {"propose", cmd_propose},
@@ -209,46 +207,6 @@ static int cmd_verify(int argc, char **argv)
 }
 
 /*
- * keygen — generate a Dilithium-3 keypair for a user identity.
- *
- *   zuno keygen --id <name>
- *
- * Writes .chain/keys/<name>.pk and .chain/keys/<name>.sk.
- * The key is a prerequisite for 'send': every sender must have a key.
- */
-static int cmd_keygen(int argc, char **argv)
-{
-    const char *id = NULL;
-    for (int i = 2; i < argc - 1; i++) {
-        if (strcmp(argv[i], "--id") == 0) { id = argv[++i]; }
-    }
-
-    if (!id) {
-        fprintf(stderr, "usage: zuno keygen --id <name>\n");
-        return 1;
-    }
-
-    /* Initialise chain dir so .chain/keys/ has a parent. */
-    Chain *c = chain_load();
-    if (!c) {
-        fprintf(stderr, "error: failed to load chain\n");
-        return 2;
-    }
-    chain_unload(c);
-
-    if (wallet_keygen(id) != EXIT_SUCCESS) {
-        fprintf(stderr, "error: keygen failed for '%s' "
-                        "(key may already exist)\n", id);
-        return 2;
-    }
-
-    printf("Generated keypair for '%s'\n", id);
-    printf("  public key : %s/%s.pk\n", WALLET_DIR, id);
-    printf("  secret key : %s/%s.sk  (keep this private)\n", WALLET_DIR, id);
-    return 0;
-}
-
-/*
  * send — sign a transaction with the sender's Dilithium-3 key and add it
  *        to the local mempool (.chain/mempool/).
  *
@@ -298,7 +256,7 @@ static int cmd_send(int argc, char **argv)
     if (!wallet_exists(from)) {
         fprintf(stderr,
                 "error: no key found for '%s'\n"
-                "       run: zuno keygen --id %s\n", from, from);
+                "       run: build/utils/key_gen %s\n", from, from);
         return 1;
     }
 
@@ -495,7 +453,6 @@ static const char *USAGE =
     "  show <hash>                      Show block details\n"
     "  cat  <hash>                      Raw field dump of a block\n"
     "  verify <hash>                    Verify a block's hash integrity\n"
-    "  keygen --id <name>               Generate a Dilithium-3 keypair for <name>\n"
     "  send --from <s> --to <r> --amount <a>\n"
     "                                   Sign and queue a transaction (mempool)\n"
     "  mine                             Build a PoW block from mempool transactions\n"
@@ -507,11 +464,7 @@ static int cmd_help(int argc, char **argv)
 {
     if (argc >= 3) {
         const char *sub = argv[2];
-        if (strcmp(sub, "keygen") == 0)
-            printf("keygen --id <name>\n"
-                   "  Generate a Dilithium-3 keypair for identity <name>.\n"
-                   "  Required before using 'send'.\n");
-        else if (strcmp(sub, "send") == 0)
+        if (strcmp(sub, "send") == 0)
             printf("send --from <sender> --to <recipient> --amount <value>\n"
                    "  Sign a transaction with the sender's private key and\n"
                    "  add it to the local mempool. Mine with 'mine'.\n");

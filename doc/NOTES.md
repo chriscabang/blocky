@@ -47,6 +47,7 @@ The git log is the record of *what* changed; this file is the record of *why*.
   - [ADR-016 Deployment — Raspberry Pi + USB SSD, Native systemd](#adr-016-deployment--raspberry-pi--usb-ssd-native-systemd)
   - [ADR-017 Validator Registry — Identity, Stake, Disk Persistence](#adr-017-validator-registry--identity-stake-disk-persistence)
   - [ADR-018 VRF Leader Selection — Slot-Based, Stake-Weighted, Dilithium-3 Proven](#adr-018-vrf-leader-selection--slot-based-stake-weighted-dilithium-3-proven)
+  - [ADR-019 Mempool + Wallet — Decoupled Send/Mine, Signed Transactions](#adr-019-mempool--wallet--decoupled-sendmine-signed-transactions)
 - [Part IV — Pending Work](#part-iv--pending-work)
 
 ---
@@ -1786,6 +1787,64 @@ type was renamed to `PosEntry` across `pos.h`, `pos.c`, and `test_pos.c`.
 | `vrf/is_elected` | 3 | Zero-total guard (no div-by-zero), guaranteed election, zero-stake |
 | `vrf/prove` | 3 | NULL id/slot_msg, valid key pair produces non-zero sig |
 | `vrf/verify` | 5 | NULL args, round-trip, tampered sig, wrong validator, unelected |
+
+---
+
+### ADR-019 Mempool + Wallet — Decoupled Send/Mine, Signed Transactions
+
+**Status:** Implemented (`src/mempool.c`, `inc/mempool.h`, `src/wallet.c`, `inc/wallet.h`, `utils/key_gen.c`).
+
+#### Problem
+
+The original `send`/`commit` CLI flow had a fundamental distributed-systems flaw: `cmd_send` wrote unsigned plain-text to a local `.chain/STAGED` file and `cmd_commit` consumed it from the same file. This coupled sender and miner to a single filesystem node — incompatible with a multi-node blockchain where any peer should be able to mine any pending transaction.
+
+#### Decision
+
+**Signed-at-send, verified-at-mine** protocol:
+
+1. `zuno send` signs the transaction with the sender's Dilithium-3 private key at submission time and writes the signed `Transaction` struct to `.chain/mempool/<txhash>`.
+2. `zuno mine` loads all mempool entries, verifies each transaction's signature against the sender's public key (from `.chain/keys/<sender>.pk`), and only includes verified transactions in the PoW block.
+3. After a block is accepted by the chain, the mined transactions are purged from the mempool.
+
+Because the signature is embedded in the `Transaction` struct (ADR-009), any node holding the sender's public key can independently verify the transaction — no shared staging file, no coupling between sender and miner.
+
+#### Modules
+
+**`wallet.c` / `wallet.h`** — key *loading* only (no generation):
+- `wallet_load_pk(id, pk_out, pk_len)` — reads `.chain/keys/<id>.pk`
+- `wallet_load_sk(id, sk_out, sk_len)` — reads `.chain/keys/<id>.sk`
+- `wallet_exists(id)` — tests `.chain/keys/<id>.pk` existence
+- `WALLET_DIR = ".chain/keys"`, `WALLET_SK_LEN = 4000`
+
+Key *generation* is intentionally out of scope. It is handled by `build/utils/key_gen <id>`, which writes `.chain/keys/<id>.pk` + `.chain/keys/<id>.sk` (mode 0600) and refuses to overwrite existing keys.
+
+**`mempool.c` / `mempool.h`** — pending transaction queue:
+- `mempool_add(tx)` — persists a signed `Transaction` to `.chain/mempool/<txhash>` where `txhash = SHA-256(sender || recipient || amount || nonce)` (same canonical message as `build_message()` in `transaction.c`)
+- `mempool_load_all(out, max, count_out)` — loads up to `max` entries
+- `mempool_purge(txns, count)` — removes the named transactions after mining
+- `mempool_count()` — returns number of pending entries
+
+The content-addressed filename makes add idempotent (same transaction re-queued overwrites the same file) and makes purge O(1) per transaction.
+
+#### CLI changes
+
+| Before | After |
+|--------|-------|
+| `send` — appended plain-text to `.chain/STAGED` | `send` — signs + adds to `.chain/mempool/` |
+| `commit` — read STAGED, mined block, cleared STAGED | `mine` — loads mempool, verifies sigs, mines block, purges mempool |
+| `keygen` — CLI subcommand (duplicated `key_gen` utility) | removed; use `build/utils/key_gen <id>` instead |
+
+#### Why not keep `zuno keygen`?
+
+`key_gen.c` already existed as a standalone utility for Dilithium-3 key generation. Adding `wallet_keygen()` to the library would have duplicated that logic. The CLI `keygen` command was a thin wrapper with no additional value. Removing it keeps the library boundary clean: `wallet.c` is a key *loader*, `key_gen` is a key *generator*.
+
+#### Test coverage
+
+| Suite | Tests |
+|-------|-------|
+| `test_wallet` | 11 tests: load_pk (3), load_sk (3), exists (3), roundtrip (2) |
+| `test_mempool` | 15 tests: add (5), load_all (5), count (2), purge (3) |
+| `test_main` (keygen group) | removed; send/mine/inspect groups use `key_gen` utility as setup |
 
 ---
 
