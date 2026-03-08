@@ -55,9 +55,12 @@ LDFLAGS  += -L$(LIBS)/liboqs/build/lib -loqs
 
 .DEFAULT_GOAL = all
 
-.PHONY: all release debug test coverage check utils clean help
+.PHONY: all release debug test_bins test coverage check utils clean help
 
 all: release debug utils
+
+# Build all test binaries without running them (used by CI build job).
+test_bins: $(TEST_BIN)
 
 utils: $(UTILS_DIR) $(UTILS_BIN) $(DEMO_SH)
 
@@ -225,9 +228,10 @@ help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all       Build both release and debug binaries (default)"
+	@echo "  all       Build release, debug, and utility binaries (default)"
 	@echo "  release   Build optimized binary (-O2) -> build/$(PROJECT)"
 	@echo "  debug     Build debug binary (-g -DDEBUG) -> build/$(PROJECT)-debug"
+	@echo "  test_bins Build test binaries without running them (CI build stage)"
 	@echo "  test      Build and run all test suites; print aggregated summary"
 	@echo "  coverage  Rebuild with --coverage; report line coverage per file"
 	@echo "              (brew install lcov for full report + HTML output)"

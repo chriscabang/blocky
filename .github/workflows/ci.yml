@@ -7,25 +7,18 @@ on:
     branches: [develop, main]
 
 jobs:
-  build-and-check:
+
+  # ── 1. deps ──────────────────────────────────────────────────────────────
+  # Install system packages and build liboqs (cached).
+  # Bump the cache key suffix (v1 → v2) to force a full liboqs rebuild.
+  deps:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v4
-
-      # ── system deps ────────────────────────────────────────────────────
-      - name: Install system dependencies
+      - name: Install build tools
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y \
-            gcc cmake ninja-build \
-            libssl-dev \
-            libcmocka-dev \
-            lcov
+          sudo apt-get install -y cmake ninja-build gcc
 
-      # ── liboqs ─────────────────────────────────────────────────────────
-      # Cache the full build directory. Bump the cache key suffix (v1→v2)
-      # to force a clean rebuild (e.g. after a major liboqs upstream change).
       - name: Cache liboqs
         id: cache-liboqs
         uses: actions/cache@v4
@@ -48,14 +41,73 @@ jobs:
             -B "${{ github.workspace }}/../libs/liboqs/build"
           ninja -C "${{ github.workspace }}/../libs/liboqs/build"
 
-      # ── zuno ───────────────────────────────────────────────────────────
-      - name: Build (release + debug + utils)
-        run: make all
+  # ── 2. build ─────────────────────────────────────────────────────────────
+  # Compile release + debug binaries and all test binaries.
+  # Uploads build/ as an artifact so the check job can reuse the binaries.
+  build:
+    needs: [deps]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Check (test suite + coverage)
-        run: make check
+      - name: Install compiler dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y gcc libssl-dev libcmocka-dev
 
-      # ── artifacts ──────────────────────────────────────────────────────
+      - name: Restore liboqs cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/../libs/liboqs
+          key: liboqs-main-${{ runner.os }}-v1
+
+      - name: Build (release + debug + utils + test binaries)
+        run: make all test_bins
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: build/
+          retention-days: 1
+
+  # ── 3. check ─────────────────────────────────────────────────────────────
+  # Runs the full test suite then rebuilds with --coverage and reports
+  # line coverage. Uploads the HTML report as a downloadable artifact.
+  check:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test and coverage dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y gcc libssl-dev libcmocka-dev lcov
+
+      - name: Restore liboqs cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/../libs/liboqs
+          key: liboqs-main-${{ runner.os }}-v1
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: build/
+
+      - name: Mark build artifacts as executable and up-to-date
+        run: |
+          find build/ -type f | xargs touch
+          chmod +x build/test_* build/utils/* build/zuno build/zuno-debug 2>/dev/null || true
+
+      - name: Run test suite
+        run: make test
+
+      - name: Run coverage
+        run: make coverage
+
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
