@@ -16,7 +16,7 @@
 #include "pow.h"
 #include "storage.h"
 #include "transaction.h"
-#include "wallet.h"
+#include "key.h"
 
 #define VERSION_STRING "zuno 0.1"
 
@@ -253,7 +253,7 @@ static int cmd_send(int argc, char **argv)
     chain_unload(c);
 
     /* Check sender has a key */
-    if (!wallet_exists(from)) {
+    if (!key_exists(from)) {
         fprintf(stderr,
                 "error: no key found for '%s'\n"
                 "       run: build/utils/key_gen %s\n", from, from);
@@ -276,14 +276,14 @@ static int cmd_send(int argc, char **argv)
     tx.nonce  = (uint64_t)time(NULL); /* monotonically increasing replay guard */
 
     /* Sign with sender's private key */
-    uint8_t sk[WALLET_SK_LEN];
-    if (wallet_load_sk(from, sk, WALLET_SK_LEN) != EXIT_SUCCESS) {
+    uint8_t sk[KEY_SK_LEN];
+    if (key_load_sk(from, sk, KEY_SK_LEN) != EXIT_SUCCESS) {
         fprintf(stderr, "error: cannot load secret key for '%s'\n", from);
         return 2;
     }
 
     int rc = sign_transaction(&tx, sk);
-    memset(sk, 0, sizeof sk); /* zero key material immediately */
+    memset(sk, 0, KEY_SK_LEN); /* zero key material immediately */
 
     if (rc != EXIT_SUCCESS) {
         fprintf(stderr, "error: failed to sign transaction\n");
@@ -352,7 +352,7 @@ static int cmd_mine(int argc, char **argv)
         const char *sender = pending[i].sender;
 
         uint8_t pk[MAX_PUBLIC_KEY_LENGTH];
-        if (wallet_load_pk(sender, pk, MAX_PUBLIC_KEY_LENGTH) != EXIT_SUCCESS) {
+        if (key_load_pk(sender, pk, MAX_PUBLIC_KEY_LENGTH) != EXIT_SUCCESS) {
             fprintf(stderr, "warn: no public key for '%s' — skipping tx\n",
                     sender);
             continue;
