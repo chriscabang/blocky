@@ -514,7 +514,7 @@ null guard, genesis-only (no-op), linear chain (no reorg), heavy-branch-wins
 
 ### ADR-003: Proposer Requirements — Stake + VRF + Dilithium
 
-**Date:** 2025-03 · **Status:** Adopted (design); implementation pending
+**Date:** 2025-03 · **Status:** Adopted (design); partially implemented
 
 #### Context
 
@@ -566,14 +566,18 @@ Block accepted → GHOST subtree weight updated
 
 #### Implementation Notes
 
-- **Dilithium-3** is the target signature scheme; it is already available via
-  `liboqs`. Transaction signing (`sign_transaction` / `verify_transaction`) is
-  fully implemented. Block-level signing (`verify_block_signature`) is a stub
-  returning `EXIT_FAILURE` pending the validator registry.
+| Component | Status | Location |
+|---|---|---|
+| Transaction signing (Dilithium-3) | Implemented | `src/transaction.c` |
+| Validator registry (keys + stake) | Implemented | `src/validator.c` — ADR-017 |
+| Stake check in PoS consensus | Implemented | `src/consensus.c` `verify_pos_rules()` |
+| Block-level signature (`verify_block_signature`) | Stub — `EXIT_FAILURE` | `src/consensus.c` |
+| VRF leader selection | Pending | Build from PQC primitives; Algorand VRF reference |
+| Dilithium-3 block signatures | Pending | Wire into `verify_block_signature()` once VRF is done |
+
+- **Validator registry** is now live — see ADR-017.
 - **VRF** is not directly provided by `liboqs` but can be constructed from PQC
   primitives. Algorand's VRF construction is a useful reference.
-- **Validator registry** — new `validator.c` or extension of `storage.c` —
-  tracks public keys and locked stake per validator ID.
 - This design is architecturally equivalent to a simplified Ethereum Beacon
   Chain (LMD-GHOST + Casper-FFG stake).
 
@@ -1584,6 +1588,88 @@ on a development machine.
 
 ---
 
+### ADR-017: Validator Registry
+
+**Date:** 2026-03 · **Status:** Adopted · **Files:** `inc/validator.h`, `src/validator.c`, `tests/test_validator.c`
+
+#### Context
+
+ADR-003 requires that every PoS block proposer has a minimum locked stake and
+a registered Dilithium-3 public key. No module existed to store or query this
+information. The validator registry is the foundation for both the stake check
+(now wired into `consensus.c`) and future Dilithium-3 block-signature
+verification.
+
+#### Decision
+
+A dedicated `validator.c` module (not an extension of `storage.c`) owns
+validator identity and stake. Single Responsibility: storage owns blocks,
+validator owns validators.
+
+**On-disk layout** — mirrors the block object store:
+
+```
+.chain/
+└── validators/
+    └── <id>   ← one binary Validator struct per file, named by ID
+```
+
+**`Validator` record:**
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `char[65]` | Unique label or SHA-256 hex of public key |
+| `public_key` | `uint8_t[1952]` | Dilithium-3 public key (MAX_PUBLIC_KEY_LENGTH) |
+| `stake` | `uint64_t` | Locked stake in micro-units (1 token = 1 000 000) |
+
+**API (5 functions, opaque `ValidatorRegistry`):**
+
+| Function | Description |
+|---|---|
+| `validator_registry_load()` | Load all validators from `.chain/validators/`; empty registry if dir absent |
+| `validator_registry_free()` | Release registry; safe with NULL |
+| `validator_register(reg, v)` | Upsert — insert or overwrite by ID; persists to disk |
+| `validator_lookup(reg, id)` | Const pointer into registry; NULL if not found |
+| `validator_check_stake(reg, id)` | EXIT_SUCCESS if stake ≥ `VALIDATOR_MIN_STAKE` (1 token) |
+| `validator_count(reg)` | Number of registered validators; 0 for NULL |
+
+**`VALIDATOR_MIN_STAKE`** = 1 token (1 000 000 micro-units). Adjustable per
+network configuration (ADR-010 stake threshold enforcement).
+
+#### Wiring into consensus
+
+`verify_pos_rules()` in `src/consensus.c` now loads the registry and calls
+`validator_check_stake()` using `block->transactions[0].sender` as the proposer
+ID when `transaction_count > 0`. Blocks with no transactions skip the check
+until a dedicated proposer-ID field is added to `Block` (ADR-003, pending).
+
+If the registry cannot be loaded, the stake check is skipped with a `log_warn`
+— fail-open during the transition period before all nodes have registered.
+
+#### SOLID mapping
+
+| Principle | Application |
+|---|---|
+| SRP | `validator.c` owns identity + stake only; VRF and block-sig wiring stay in `consensus.c` |
+| OCP | Adding VRF fields to `Validator` later requires no change to `validator_register` or `validator_lookup` |
+| LSP | All lookup functions take `const ValidatorRegistry *`; callers cannot mutate via lookup pointer |
+| ISP | `ValidatorRegistry` is opaque — callers only see the 5-function surface, not the growable array internals |
+| DIP | `consensus.c` depends on `validator.h` (the abstraction); the binary file layout is hidden |
+
+#### Tests
+
+19 tests in `tests/test_validator.c` across 5 groups:
+
+| Group | Tests | What is covered |
+|---|---|---|
+| `registry/load` | 2 | Cold-start empty registry; reload persisted entries |
+| `registry/register` | 6 | NULL guards, empty-ID rejection, valid insert, disk persistence, upsert |
+| `registry/lookup` | 4 | NULL guards, found/not-found |
+| `registry/stake` | 5 | NULL guard, not-found, below/at/above minimum |
+| `registry/count` | 2 | NULL safety, increments correctly |
+
+---
+
 ## Part IV — Pending Work
 
 Items that are designed (ADR adopted) but not yet implemented:
@@ -1592,7 +1678,6 @@ Items that are designed (ADR adopted) but not yet implemented:
 
 | Work Item | ADR | Location |
 |---|---|---|
-| Validator registry (public keys + stake) | ADR-003 | New `validator.c` or extension of `storage.c` |
 | VRF leader selection | ADR-003 | Build from PQC primitives; Algorand VRF is a reference |
 | Dilithium-3 block signatures | ADR-003 | Wire `verify_block_signature()` in `consensus.c` to key registry |
 

@@ -1,10 +1,12 @@
 /* consensus.c — consensus routing: PoW and PoS block validation. */
 #include "consensus.h"
+#include "validator.h"
 #include "pow.h"
 #include "block.h"
 #include "log.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 /* ── internal rules ───────────────────────────────────────────────────── */
 
@@ -41,10 +43,34 @@ static int verify_pos_rules(const Block *block) {
         return EXIT_FAILURE;
     }
 
+    /*
+     * 2. Stake check — proposer must have minimum stake in the registry.
+     *
+     * The proposer ID is read from block->transactions[0].sender when at least
+     * one transaction is present. Blocks with no transactions (e.g. genesis or
+     * empty PoS blocks) skip the stake check until a dedicated proposer-ID
+     * field is added to Block (ADR-003).
+     */
+    if (block->transaction_count > 0) {
+        ValidatorRegistry *reg = validator_registry_load();
+        if (reg) {
+            const char *proposer = block->transactions[0].sender;
+            if (validator_check_stake(reg, proposer) != EXIT_SUCCESS) {
+                log_warn("verify_consensus: PoS block %u proposer '%s' "
+                         "has insufficient stake", block->index, proposer);
+                validator_registry_free(reg);
+                return EXIT_FAILURE;
+            }
+            validator_registry_free(reg);
+        } else {
+            log_warn("verify_consensus: could not load validator registry "
+                     "for block %u; skipping stake check", block->index);
+        }
+    }
+
     /* TODO (ADR-003): verify VRF proof — proposer must hold the slot token. */
     /* TODO (ADR-003): verify Dilithium-3 block signature via
      *                 verify_block_signature(block). */
-    /* TODO (ADR-002): verify proposer has sufficient registered stake. */
 
     return EXIT_SUCCESS;
 }
