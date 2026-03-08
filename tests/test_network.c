@@ -80,7 +80,7 @@ static int write_test_cert(const char *cert_path, const char *key_path)
 
     name = X509_get_subject_name(x509);
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                               (const unsigned char *)"kiat-test",
+                               (const unsigned char *)"zuno-test",
                                -1, -1, 0);
     if (X509_set_issuer_name(x509, name) != 1) goto out;
     if (!X509_sign(x509, pkey, EVP_sha256())) goto out;

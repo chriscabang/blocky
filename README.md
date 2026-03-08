@@ -1,9 +1,17 @@
-# kiat
+# zuno
 
-**kiat** — *Key-signed Immutable Append-only Transactions*
+**zuno** — *Zero-trust Unalterable Notarized Object-store*
 
-*kiat* means **little wild** or **naughty** — a fitting name for a
-lightweight, scrappy blockchain that punches above its weight on modest hardware.
+Named after Zuno, the omniscient being from *Dragon Ball Super* who holds the
+answer to every question ever asked. A blockchain is the same: an immutable,
+tamper-proof record of all truth — nothing forgotten, nothing alterable.
+
+| Word | Property |
+|---|---|
+| **Zero-trust** | No central authority — every block cryptographically verified by every peer |
+| **Unalterable** | Hash-chained immutable ledger — tampering breaks the chain |
+| **Notarized** | Dilithium-3 post-quantum signatures on transactions and blocks |
+| **Object-store** | Git-style `.chain/blocks/` content-addressed storage, one file per hash |
 
 A lightweight, post-quantum secure blockchain written in C, designed to run on
 **Raspberry Pi** and other embedded devices. The workflow is modeled after git:
@@ -48,7 +56,7 @@ stage transactions, commit a mined block, propose it to peers.
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                   kiat CLI                    │  main.c — git-like subcommands
+│                   zuno CLI                    │  main.c — git-like subcommands
 └──────────────────────┬──────────────────────────┘
                        │
           ┌────────────┼────────────┐
@@ -112,7 +120,7 @@ sudo apt install build-essential libssl-dev libcmocka-dev
 liboqs is built in-tree alongside the project:
 
 ```sh
-# from the parent of your kiat checkout
+# from the parent of your zuno checkout
 mkdir -p libs && cd libs
 git clone --depth 1 https://github.com/open-quantum-safe/liboqs.git
 cd liboqs
@@ -132,8 +140,8 @@ project root.
 make all
 
 # Outputs:
-#   build/kiat           — optimized release binary
-#   build/kiat-debug     — debug binary (-g -DDEBUG)
+#   build/zuno           — optimized release binary
+#   build/zuno-debug     — debug binary (-g -DDEBUG)
 #   build/utils/           — demo utility binaries
 ```
 
@@ -153,17 +161,17 @@ make help       # List all targets
 
 ```sh
 # 1. Initialize the chain (creates genesis block)
-./build/kiat init
+./build/zuno init
 
 # 2. Stage a transaction
-./build/kiat send --from alice --to bob --amount 10.5
+./build/zuno send --from alice --to bob --amount 10.5
 
 # 3. Mine a block containing the staged transactions
-./build/kiat commit
+./build/zuno commit
 
 # 4. Check the chain
-./build/kiat log
-./build/kiat status
+./build/zuno log
+./build/zuno status
 ```
 
 ---
@@ -171,7 +179,7 @@ make help       # List all targets
 ## CLI Reference
 
 ```
-Usage: kiat <command> [options]
+Usage: zuno <command> [options]
 
 Commands:
   init                             Initialise chain (creates genesis block)
@@ -198,34 +206,34 @@ arithmetic in the core.
 
 ### 1. Exchanging Money
 
-kiat uses a **stage-then-commit** workflow. Transactions are staged in
+zuno uses a **stage-then-commit** workflow. Transactions are staged in
 `.chain/STAGED` (a plain text file) and sealed into a block on `commit`.
 
 ```sh
 # Initialize the chain if starting fresh
-./build/kiat init
+./build/zuno init
 # Initialised chain at .chain/
 # Tip: block #0 (a3f8c2...)
 
 # Stage one transaction
-./build/kiat send --from alice --to bob --amount 25.0
+./build/zuno send --from alice --to bob --amount 25.0
 # Staged: alice -> bob  25.000000
 
 # Stage a second transaction in the same block
-./build/kiat send --from carol --to dave --amount 7.5
+./build/zuno send --from carol --to dave --amount 7.5
 # Staged: carol -> dave  7.500000
 
 # Check what is pending
-./build/kiat status
+./build/zuno status
 # Chain tip:  block #0 (a3f8c2d1...)
 # Staged:     2 transaction(s) pending
 
 # Commit: mines a PoW block and appends it to the chain
-./build/kiat commit
+./build/zuno commit
 # Committed block #1 (0000e4f2...)
 
 # Confirm
-./build/kiat log
+./build/zuno log
 # block #1    0000e4f2...  ts=1700001234  txns=2
 # block #0    a3f8c2d1...  ts=1700000000  txns=0
 ```
@@ -265,7 +273,7 @@ chmod 600 alice.key
 
 ### 2. Mining a Block
 
-`kiat commit` mines automatically. For standalone PoW mining:
+`zuno commit` mines automatically. For standalone PoW mining:
 
 ```sh
 # Mine an empty block at default difficulty (4 leading hex zeros)
@@ -296,7 +304,7 @@ re-hashes the nonce on each iteration.
 #### Verify hash integrity of a specific block
 
 ```sh
-./build/kiat verify 0000e4f2c9a3b1d8e7f600000000000000000000000000000000000000001234
+./build/zuno verify 0000e4f2c9a3b1d8e7f600000000000000000000000000000000000000001234
 # OK    0000e4f2c9a3...
 ```
 
@@ -306,7 +314,7 @@ Returns exit code `0` for valid, `2` for tampered or not found.
 
 ```sh
 # Formatted view
-./build/kiat show <hash>
+./build/zuno show <hash>
 # block #1
 #   hash:      0000e4f2...
 #   prev:      a3f8c2d1...
@@ -319,17 +327,17 @@ Returns exit code `0` for valid, `2` for tampered or not found.
 #     [1] carol -> dave  7.500000
 
 # Raw field dump (machine-readable)
-./build/kiat cat <hash>
+./build/zuno cat <hash>
 ```
 
 #### Inspect the full chain
 
 ```sh
 # List most recent 10 blocks
-./build/kiat log
+./build/zuno log
 
 # List most recent 25 blocks
-./build/kiat log --limit 25
+./build/zuno log --limit 25
 
 # Inspect via utility (with page size)
 ./build/utils/inspect_chain       # last 10 blocks
@@ -379,7 +387,7 @@ With optional mutual TLS (verify connecting peers against a CA):
 
 ```sh
 # Using the CLI (reads .chain/peers for peer list)
-./build/kiat propose
+./build/zuno propose
 # Proposed block #3 (0000a1b2...)
 
 # Using the utility (direct peer address)
@@ -414,22 +422,22 @@ EOF
 
 ```sh
 # Start fresh
-./build/kiat init
+./build/zuno init
 echo "192.168.1.20:8333" > .chain/peers
 
 # Start TLS listener in background
 ./build/utils/start_chain 8333 node.crt node.key &
 
 # Mine a block and broadcast it
-./build/kiat send --from alice --to bob --amount 10
-./build/kiat commit
-./build/kiat propose
+./build/zuno send --from alice --to bob --amount 10
+./build/zuno commit
+./build/zuno propose
 ```
 
 **Node B** (192.168.1.20) — starts its own chain:
 
 ```sh
-./build/kiat init
+./build/zuno init
 echo "192.168.1.10:8333" > .chain/peers
 ./build/utils/start_chain 8333 node.crt node.key
 # Receives the block broadcast by Node A, validates, and appends it
@@ -438,9 +446,9 @@ echo "192.168.1.10:8333" > .chain/peers
 #### systemd service (Raspberry Pi)
 
 ```ini
-# /etc/systemd/system/kiat.service
+# /etc/systemd/system/zuno.service
 [Unit]
-Description=kiat P2P node
+Description=zuno P2P node
 After=network-online.target
 Wants=network-online.target
 
@@ -450,15 +458,15 @@ WorkingDirectory=/mnt/ssd/chain
 ExecStart=/usr/local/bin/start_chain 8333 tls-cert.pem tls-key.pem
 Restart=on-failure
 RestartSec=5
-User=kiat
+User=zuno
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```sh
-sudo systemctl enable --now kiat
-sudo journalctl -u kiat -f    # follow logs
+sudo systemctl enable --now zuno
+sudo journalctl -u zuno -f    # follow logs
 ```
 
 > **Storage note:** Always run the chain on a **USB SSD**, never on the
@@ -518,7 +526,7 @@ Example output:
 ## Project Layout
 
 ```
-kiat/
+zuno/
 ├── src/                    C source files
 │   ├── main.c              CLI dispatcher (init, send, commit, propose, …)
 │   ├── chain.c             In-memory chain with pool allocator

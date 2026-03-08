@@ -1,4 +1,4 @@
-/* main.c — Git-like CLI for kiat
+/* main.c — Git-like CLI for zuno
  * Author: Chris Cabang <chriscabang@outlook.com>
  */
 
@@ -15,7 +15,7 @@
 #include "storage.h"
 #include "transaction.h"
 
-#define VERSION_STRING  "kiat 0.1"
+#define VERSION_STRING  "zuno 0.1"
 #define STAGED_PATH     ".chain/STAGED"
 
 /* ── forward declarations ─────────────────────────────────────────────── */
@@ -141,7 +141,7 @@ static int cmd_log(int argc, char **argv)
 static int cmd_show(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "usage: kiat show <hash>\n");
+        fprintf(stderr, "usage: zuno show <hash>\n");
         return 1;
     }
     Block *b = storage_read(argv[2]);
@@ -170,7 +170,7 @@ static int cmd_show(int argc, char **argv)
 static int cmd_cat(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "usage: kiat cat <hash>\n");
+        fprintf(stderr, "usage: zuno cat <hash>\n");
         return 1;
     }
     Block *b = storage_read(argv[2]);
@@ -200,7 +200,7 @@ static int cmd_cat(int argc, char **argv)
 static int cmd_verify(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "usage: kiat verify <hash>\n");
+        fprintf(stderr, "usage: zuno verify <hash>\n");
         return 1;
     }
     Block *b = storage_read(argv[2]);
@@ -232,7 +232,7 @@ static int cmd_send(int argc, char **argv)
 
     if (!from || !to || !amount) {
         fprintf(stderr,
-                "usage: kiat send --from <sender> --to <recipient>"
+                "usage: zuno send --from <sender> --to <recipient>"
                 " --amount <value>\n");
         return 1;
     }
@@ -392,7 +392,7 @@ static int cmd_version(int argc, char **argv)
 }
 
 static const char *USAGE =
-    "Usage: kiat <command> [options]\n"
+    "Usage: zuno <command> [options]\n"
     "\n"
     "Commands:\n"
     "  init                             Initialise chain (creates genesis block)\n"
@@ -453,6 +453,6 @@ int main(int argc, char *argv[])
     }
 
     fprintf(stderr, "error: unknown command '%s'\n", argv[1]);
-    fprintf(stderr, "Run 'kiat help' for usage.\n");
+    fprintf(stderr, "Run 'zuno help' for usage.\n");
     return 1;
 }

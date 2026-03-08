@@ -36,9 +36,9 @@
  * Remote monitoring
  * ─────────────────
  * Use log_set_stream() to redirect output to a named pipe (FIFO):
- *   mkfifo /tmp/kiat.log
- *   // in code:  log_set_stream(fopen("/tmp/kiat.log", "w"));
- *   // shell:    cat /tmp/kiat.log | ssh user@monitor ...
+ *   mkfifo /tmp/zuno.log
+ *   // in code:  log_set_stream(fopen("/tmp/zuno.log", "w"));
+ *   // shell:    cat /tmp/zuno.log | ssh user@monitor ...
  * A dedicated TCP/UDP logging port is NOT recommended: it exposes real-time
  * mining state (nonce trajectory, block solve timing) to unauthenticated
  * network observers, enabling timing attacks and selfish-mining intelligence.

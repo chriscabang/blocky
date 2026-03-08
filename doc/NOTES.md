@@ -1,8 +1,14 @@
-# kiat — Architecture & Design Notes
+# zuno — Architecture & Design Notes
+
+**zuno** — *Zero-trust Unalterable Notarized Object-store*
+
+Named after Zuno from *Dragon Ball Super* — the omniscient being who holds
+the answer to every question. Like Zuno, this ledger forgets nothing and can
+be fooled by no one.
 
 This document captures architectural decisions, design discussions, and
-implementation rationale for the kiat (`kiat`) project. It is the
-authoritative reference for why the code is structured the way it is.
+implementation rationale for the zuno project. It is the authoritative
+reference for why the code is structured the way it is.
 
 Update this file whenever a design decision is made, revised, or reversed.
 The git log is the record of *what* changed; this file is the record of *why*.
@@ -89,7 +95,7 @@ includes `network.h`), but the `chain.h` interface has no network types.
 ### Data Flow: Transaction to Block
 
 ```
-User: kiat send --from alice --to bob --amount 10.5
+User: zuno send --from alice --to bob --amount 10.5
           │
           ▼
   Transaction {sender, recipient, amount=10500000, nonce}
@@ -99,7 +105,7 @@ User: kiat send --from alice --to bob --amount 10.5
           ▼
   .chain/STAGED  (tab-separated staging area — ADR-008)
 
-User: kiat commit
+User: zuno commit
           │
           ▼
   block_create(index, prev_hash)
@@ -194,7 +200,7 @@ monitor mode.
 
 ## Part II — Design Philosophy
 
-kiat is written in C and deliberately applies **SOLID principles** and
+zuno is written in C and deliberately applies **SOLID principles** and
 **clean code** practices throughout. These are not aspirational — they are
 enforced at review time.
 
@@ -391,22 +397,22 @@ int main(void) {
 
 #### Context
 
-The goal of kiat is to create a blockchain that operates like git. Both
+The goal of zuno is to create a blockchain that operates like git. Both
 systems are content-addressed DAGs: commits and blocks are identified by the
 hash of their content plus their parent's hash.
 
-| Git operation | `kiat` equivalent |
+| Git operation | `zuno` equivalent |
 |---|---|
-| `git init` | `kiat init` — initialize chain, create genesis block |
-| `git status` | `kiat status` — show chain tip and staged transactions |
-| `git add <file>` | `kiat send --from X --to Y --amount N` — stage a transaction |
-| `git commit` | `kiat commit` — seal staged transactions into a new block |
-| `git commit -S` | `kiat commit` + Dilithium signing — sign block (ADR-003, pending) |
-| `git push` | `kiat propose` — broadcast block to peers |
-| `git log` | `kiat log [--limit N]` — list blocks newest-first |
-| `git show <hash>` | `kiat show <hash>` — human-readable block detail |
-| `git cat-file -p <hash>` | `kiat cat <hash>` — raw field dump of a block |
-| `git verify-commit <hash>` | `kiat verify <hash>` — verify block hash integrity |
+| `git init` | `zuno init` — initialize chain, create genesis block |
+| `git status` | `zuno status` — show chain tip and staged transactions |
+| `git add <file>` | `zuno send --from X --to Y --amount N` — stage a transaction |
+| `git commit` | `zuno commit` — seal staged transactions into a new block |
+| `git commit -S` | `zuno commit` + Dilithium signing — sign block (ADR-003, pending) |
+| `git push` | `zuno propose` — broadcast block to peers |
+| `git log` | `zuno log [--limit N]` — list blocks newest-first |
+| `git show <hash>` | `zuno show <hash>` — human-readable block detail |
+| `git cat-file -p <hash>` | `zuno cat <hash>` — raw field dump of a block |
+| `git verify-commit <hash>` | `zuno verify <hash>` — verify block hash integrity |
 | `git checkout <branch>` | automatic — GHOST selects heaviest chain tip (ADR-002) |
 | Branch pointer | chain tip stored in `.chain/refs/` |
 | Competing branches | chain forks — resolved by GHOST subtree weight (ADR-002) |
@@ -1168,8 +1174,8 @@ storage or forwarded to external systems — treat all log content as public.
 `log_set_stream(FILE *)` accepts any `FILE*`, including one opened on a FIFO:
 
 ```c
-log_set_stream(fopen("/tmp/kiat.log", "w"));
-/* shell: tail -f /tmp/kiat.log | ssh user@monitor */
+log_set_stream(fopen("/tmp/zuno.log", "w"));
+/* shell: tail -f /tmp/zuno.log | ssh user@monitor */
 ```
 
 A dedicated TCP/UDP logging port is **not recommended** — it exposes mining
@@ -1480,7 +1486,7 @@ safely applied to any existing function:
 
 #### Decision
 
-kiat nodes are deployed natively on **Raspberry Pi 4 or 5** with an
+zuno nodes are deployed natively on **Raspberry Pi 4 or 5** with an
 **attached USB SSD** (not microSD). No Docker in production. Docker Compose
 is permitted only for local development.
 
@@ -1500,11 +1506,11 @@ Symlink or bind-mount `.chain/` to the SSD path from day one.
 
 ```
 Raspberry Pi OS Lite (64-bit, Debian-based)
-├── kiat binary          → /usr/local/bin/kiat
+├── zuno binary          → /usr/local/bin/zuno
 ├── start_chain binary     → /usr/local/bin/start_chain
-├── systemd unit           → /etc/systemd/system/kiat.service
+├── systemd unit           → /etc/systemd/system/zuno.service
 └── chain data             → /mnt/ssd/chain/
-    ├── .chain/            → kiat working directory
+    ├── .chain/            → zuno working directory
     ├── tls-cert.pem       → node TLS certificate
     ├── tls-key.pem        → node TLS private key (chmod 600)
     └── peers              → one ip:port per line
@@ -1516,7 +1522,7 @@ WireGuard mesh: `/etc/wireguard/wg0.conf`
 
 ```ini
 [Unit]
-Description=kiat P2P node
+Description=zuno P2P node
 After=network-online.target
 Wants=network-online.target
 
@@ -1526,7 +1532,7 @@ WorkingDirectory=/mnt/ssd/chain
 ExecStart=/usr/local/bin/start_chain 8333 tls-cert.pem tls-key.pem
 Restart=on-failure
 RestartSec=5
-User=kiat
+User=zuno
 ProtectSystem=full
 PrivateTmp=true
 
@@ -1559,7 +1565,7 @@ inter-node traffic traverses the encrypted WireGuard tunnel.
 #### Avoiding Docker in Production
 
 Docker adds container overhead (memory, I/O layers) and complicates systemd
-integration on a single-board computer. The `kiat` binary has no runtime
+integration on a single-board computer. The `zuno` binary has no runtime
 dependencies beyond OpenSSL and liboqs — it runs directly under systemd.
 
 Docker Compose is useful for spinning up a local multi-node test environment
