@@ -1,7 +1,7 @@
-# bloc — Architecture & Design Notes
+# kiat — Architecture & Design Notes
 
 This document captures architectural decisions, design discussions, and
-implementation rationale for the bloc (`bloc`) project. It is the
+implementation rationale for the kiat (`kiat`) project. It is the
 authoritative reference for why the code is structured the way it is.
 
 Update this file whenever a design decision is made, revised, or reversed.
@@ -89,7 +89,7 @@ includes `network.h`), but the `chain.h` interface has no network types.
 ### Data Flow: Transaction to Block
 
 ```
-User: bloc send --from alice --to bob --amount 10.5
+User: kiat send --from alice --to bob --amount 10.5
           │
           ▼
   Transaction {sender, recipient, amount=10500000, nonce}
@@ -99,7 +99,7 @@ User: bloc send --from alice --to bob --amount 10.5
           ▼
   .chain/STAGED  (tab-separated staging area — ADR-008)
 
-User: bloc commit
+User: kiat commit
           │
           ▼
   block_create(index, prev_hash)
@@ -194,7 +194,7 @@ monitor mode.
 
 ## Part II — Design Philosophy
 
-bloc is written in C and deliberately applies **SOLID principles** and
+kiat is written in C and deliberately applies **SOLID principles** and
 **clean code** practices throughout. These are not aspirational — they are
 enforced at review time.
 
@@ -391,22 +391,22 @@ int main(void) {
 
 #### Context
 
-The goal of bloc is to create a blockchain that operates like git. Both
+The goal of kiat is to create a blockchain that operates like git. Both
 systems are content-addressed DAGs: commits and blocks are identified by the
 hash of their content plus their parent's hash.
 
-| Git operation | `bloc` equivalent |
+| Git operation | `kiat` equivalent |
 |---|---|
-| `git init` | `bloc init` — initialize chain, create genesis block |
-| `git status` | `bloc status` — show chain tip and staged transactions |
-| `git add <file>` | `bloc send --from X --to Y --amount N` — stage a transaction |
-| `git commit` | `bloc commit` — seal staged transactions into a new block |
-| `git commit -S` | `bloc commit` + Dilithium signing — sign block (ADR-003, pending) |
-| `git push` | `bloc propose` — broadcast block to peers |
-| `git log` | `bloc log [--limit N]` — list blocks newest-first |
-| `git show <hash>` | `bloc show <hash>` — human-readable block detail |
-| `git cat-file -p <hash>` | `bloc cat <hash>` — raw field dump of a block |
-| `git verify-commit <hash>` | `bloc verify <hash>` — verify block hash integrity |
+| `git init` | `kiat init` — initialize chain, create genesis block |
+| `git status` | `kiat status` — show chain tip and staged transactions |
+| `git add <file>` | `kiat send --from X --to Y --amount N` — stage a transaction |
+| `git commit` | `kiat commit` — seal staged transactions into a new block |
+| `git commit -S` | `kiat commit` + Dilithium signing — sign block (ADR-003, pending) |
+| `git push` | `kiat propose` — broadcast block to peers |
+| `git log` | `kiat log [--limit N]` — list blocks newest-first |
+| `git show <hash>` | `kiat show <hash>` — human-readable block detail |
+| `git cat-file -p <hash>` | `kiat cat <hash>` — raw field dump of a block |
+| `git verify-commit <hash>` | `kiat verify <hash>` — verify block hash integrity |
 | `git checkout <branch>` | automatic — GHOST selects heaviest chain tip (ADR-002) |
 | Branch pointer | chain tip stored in `.chain/refs/` |
 | Competing branches | chain forks — resolved by GHOST subtree weight (ADR-002) |
@@ -1147,8 +1147,8 @@ storage or forwarded to external systems — treat all log content as public.
 `log_set_stream(FILE *)` accepts any `FILE*`, including one opened on a FIFO:
 
 ```c
-log_set_stream(fopen("/tmp/bloc.log", "w"));
-/* shell: tail -f /tmp/bloc.log | ssh user@monitor */
+log_set_stream(fopen("/tmp/kiat.log", "w"));
+/* shell: tail -f /tmp/kiat.log | ssh user@monitor */
 ```
 
 A dedicated TCP/UDP logging port is **not recommended** — it exposes mining
@@ -1459,7 +1459,7 @@ safely applied to any existing function:
 
 #### Decision
 
-bloc nodes are deployed natively on **Raspberry Pi 4 or 5** with an
+kiat nodes are deployed natively on **Raspberry Pi 4 or 5** with an
 **attached USB SSD** (not microSD). No Docker in production. Docker Compose
 is permitted only for local development.
 
@@ -1479,11 +1479,11 @@ Symlink or bind-mount `.chain/` to the SSD path from day one.
 
 ```
 Raspberry Pi OS Lite (64-bit, Debian-based)
-├── bloc binary          → /usr/local/bin/bloc
+├── kiat binary          → /usr/local/bin/kiat
 ├── start_chain binary     → /usr/local/bin/start_chain
-├── systemd unit           → /etc/systemd/system/bloc.service
+├── systemd unit           → /etc/systemd/system/kiat.service
 └── chain data             → /mnt/ssd/chain/
-    ├── .chain/            → bloc working directory
+    ├── .chain/            → kiat working directory
     ├── tls-cert.pem       → node TLS certificate
     ├── tls-key.pem        → node TLS private key (chmod 600)
     └── peers              → one ip:port per line
@@ -1495,7 +1495,7 @@ WireGuard mesh: `/etc/wireguard/wg0.conf`
 
 ```ini
 [Unit]
-Description=bloc P2P node
+Description=kiat P2P node
 After=network-online.target
 Wants=network-online.target
 
@@ -1505,7 +1505,7 @@ WorkingDirectory=/mnt/ssd/chain
 ExecStart=/usr/local/bin/start_chain 8333 tls-cert.pem tls-key.pem
 Restart=on-failure
 RestartSec=5
-User=bloc
+User=kiat
 ProtectSystem=full
 PrivateTmp=true
 
@@ -1538,7 +1538,7 @@ inter-node traffic traverses the encrypted WireGuard tunnel.
 #### Avoiding Docker in Production
 
 Docker adds container overhead (memory, I/O layers) and complicates systemd
-integration on a single-board computer. The `bloc` binary has no runtime
+integration on a single-board computer. The `kiat` binary has no runtime
 dependencies beyond OpenSSL and liboqs — it runs directly under systemd.
 
 Docker Compose is useful for spinning up a local multi-node test environment

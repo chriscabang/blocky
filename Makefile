@@ -1,4 +1,4 @@
-PROJECT  := bloc
+PROJECT  := kiat
 VERSION  := 0.1
 # export MallocStackLogging=1
 # leaks --atExit --leak-check=full --track-origins=yes

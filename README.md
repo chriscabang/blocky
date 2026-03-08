@@ -1,4 +1,9 @@
-# bloc
+# kiat
+
+**kiat** — *Key-signed Immutable Append-only Transactions*
+
+*kiat* means **little wild** or **naughty** — a fitting name for a
+lightweight, scrappy blockchain that punches above its weight on modest hardware.
 
 A lightweight, post-quantum secure blockchain written in C, designed to run on
 **Raspberry Pi** and other embedded devices. The workflow is modeled after git:
@@ -43,7 +48,7 @@ stage transactions, commit a mined block, propose it to peers.
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                   bloc CLI                    │  main.c — git-like subcommands
+│                   kiat CLI                    │  main.c — git-like subcommands
 └──────────────────────┬──────────────────────────┘
                        │
           ┌────────────┼────────────┐
@@ -107,7 +112,7 @@ sudo apt install build-essential libssl-dev libcmocka-dev
 liboqs is built in-tree alongside the project:
 
 ```sh
-# from the parent of your bloc checkout
+# from the parent of your kiat checkout
 mkdir -p libs && cd libs
 git clone --depth 1 https://github.com/open-quantum-safe/liboqs.git
 cd liboqs
@@ -127,8 +132,8 @@ project root.
 make all
 
 # Outputs:
-#   build/bloc           — optimized release binary
-#   build/bloc-debug     — debug binary (-g -DDEBUG)
+#   build/kiat           — optimized release binary
+#   build/kiat-debug     — debug binary (-g -DDEBUG)
 #   build/utils/           — demo utility binaries
 ```
 
@@ -148,17 +153,17 @@ make help       # List all targets
 
 ```sh
 # 1. Initialize the chain (creates genesis block)
-./build/bloc init
+./build/kiat init
 
 # 2. Stage a transaction
-./build/bloc send --from alice --to bob --amount 10.5
+./build/kiat send --from alice --to bob --amount 10.5
 
 # 3. Mine a block containing the staged transactions
-./build/bloc commit
+./build/kiat commit
 
 # 4. Check the chain
-./build/bloc log
-./build/bloc status
+./build/kiat log
+./build/kiat status
 ```
 
 ---
@@ -166,7 +171,7 @@ make help       # List all targets
 ## CLI Reference
 
 ```
-Usage: bloc <command> [options]
+Usage: kiat <command> [options]
 
 Commands:
   init                             Initialise chain (creates genesis block)
@@ -193,34 +198,34 @@ arithmetic in the core.
 
 ### 1. Exchanging Money
 
-bloc uses a **stage-then-commit** workflow. Transactions are staged in
+kiat uses a **stage-then-commit** workflow. Transactions are staged in
 `.chain/STAGED` (a plain text file) and sealed into a block on `commit`.
 
 ```sh
 # Initialize the chain if starting fresh
-./build/bloc init
+./build/kiat init
 # Initialised chain at .chain/
 # Tip: block #0 (a3f8c2...)
 
 # Stage one transaction
-./build/bloc send --from alice --to bob --amount 25.0
+./build/kiat send --from alice --to bob --amount 25.0
 # Staged: alice -> bob  25.000000
 
 # Stage a second transaction in the same block
-./build/bloc send --from carol --to dave --amount 7.5
+./build/kiat send --from carol --to dave --amount 7.5
 # Staged: carol -> dave  7.500000
 
 # Check what is pending
-./build/bloc status
+./build/kiat status
 # Chain tip:  block #0 (a3f8c2d1...)
 # Staged:     2 transaction(s) pending
 
 # Commit: mines a PoW block and appends it to the chain
-./build/bloc commit
+./build/kiat commit
 # Committed block #1 (0000e4f2...)
 
 # Confirm
-./build/bloc log
+./build/kiat log
 # block #1    0000e4f2...  ts=1700001234  txns=2
 # block #0    a3f8c2d1...  ts=1700000000  txns=0
 ```
@@ -260,7 +265,7 @@ chmod 600 alice.key
 
 ### 2. Mining a Block
 
-`bloc commit` mines automatically. For standalone PoW mining:
+`kiat commit` mines automatically. For standalone PoW mining:
 
 ```sh
 # Mine an empty block at default difficulty (4 leading hex zeros)
@@ -291,7 +296,7 @@ re-hashes the nonce on each iteration.
 #### Verify hash integrity of a specific block
 
 ```sh
-./build/bloc verify 0000e4f2c9a3b1d8e7f600000000000000000000000000000000000000001234
+./build/kiat verify 0000e4f2c9a3b1d8e7f600000000000000000000000000000000000000001234
 # OK    0000e4f2c9a3...
 ```
 
@@ -301,7 +306,7 @@ Returns exit code `0` for valid, `2` for tampered or not found.
 
 ```sh
 # Formatted view
-./build/bloc show <hash>
+./build/kiat show <hash>
 # block #1
 #   hash:      0000e4f2...
 #   prev:      a3f8c2d1...
@@ -314,17 +319,17 @@ Returns exit code `0` for valid, `2` for tampered or not found.
 #     [1] carol -> dave  7.500000
 
 # Raw field dump (machine-readable)
-./build/bloc cat <hash>
+./build/kiat cat <hash>
 ```
 
 #### Inspect the full chain
 
 ```sh
 # List most recent 10 blocks
-./build/bloc log
+./build/kiat log
 
 # List most recent 25 blocks
-./build/bloc log --limit 25
+./build/kiat log --limit 25
 
 # Inspect via utility (with page size)
 ./build/utils/inspect_chain       # last 10 blocks
@@ -374,7 +379,7 @@ With optional mutual TLS (verify connecting peers against a CA):
 
 ```sh
 # Using the CLI (reads .chain/peers for peer list)
-./build/bloc propose
+./build/kiat propose
 # Proposed block #3 (0000a1b2...)
 
 # Using the utility (direct peer address)
@@ -409,22 +414,22 @@ EOF
 
 ```sh
 # Start fresh
-./build/bloc init
+./build/kiat init
 echo "192.168.1.20:8333" > .chain/peers
 
 # Start TLS listener in background
 ./build/utils/start_chain 8333 node.crt node.key &
 
 # Mine a block and broadcast it
-./build/bloc send --from alice --to bob --amount 10
-./build/bloc commit
-./build/bloc propose
+./build/kiat send --from alice --to bob --amount 10
+./build/kiat commit
+./build/kiat propose
 ```
 
 **Node B** (192.168.1.20) — starts its own chain:
 
 ```sh
-./build/bloc init
+./build/kiat init
 echo "192.168.1.10:8333" > .chain/peers
 ./build/utils/start_chain 8333 node.crt node.key
 # Receives the block broadcast by Node A, validates, and appends it
@@ -433,9 +438,9 @@ echo "192.168.1.10:8333" > .chain/peers
 #### systemd service (Raspberry Pi)
 
 ```ini
-# /etc/systemd/system/bloc.service
+# /etc/systemd/system/kiat.service
 [Unit]
-Description=bloc P2P node
+Description=kiat P2P node
 After=network-online.target
 Wants=network-online.target
 
@@ -445,15 +450,15 @@ WorkingDirectory=/mnt/ssd/chain
 ExecStart=/usr/local/bin/start_chain 8333 tls-cert.pem tls-key.pem
 Restart=on-failure
 RestartSec=5
-User=bloc
+User=kiat
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```sh
-sudo systemctl enable --now bloc
-sudo journalctl -u bloc -f    # follow logs
+sudo systemctl enable --now kiat
+sudo journalctl -u kiat -f    # follow logs
 ```
 
 > **Storage note:** Always run the chain on a **USB SSD**, never on the
@@ -513,7 +518,7 @@ Example output:
 ## Project Layout
 
 ```
-bloc/
+kiat/
 ├── src/                    C source files
 │   ├── main.c              CLI dispatcher (init, send, commit, propose, …)
 │   ├── chain.c             In-memory chain with pool allocator
