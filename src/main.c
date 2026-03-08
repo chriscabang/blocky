@@ -5,18 +5,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "block.h"
 #include "chain.h"
 #include "consensus.h"
 #include "crypto.h"
+#include "mempool.h"
 #include "pow.h"
 #include "storage.h"
 #include "transaction.h"
+#include "wallet.h"
 
-#define VERSION_STRING  "zuno 0.1"
-#define STAGED_PATH     ".chain/STAGED"
+#define VERSION_STRING "zuno 0.1"
 
 /* ── forward declarations ─────────────────────────────────────────────── */
 
@@ -26,8 +28,9 @@ static int cmd_log(int argc, char **argv);
 static int cmd_show(int argc, char **argv);
 static int cmd_cat(int argc, char **argv);
 static int cmd_verify(int argc, char **argv);
+static int cmd_keygen(int argc, char **argv);
 static int cmd_send(int argc, char **argv);
-static int cmd_commit(int argc, char **argv);
+static int cmd_mine(int argc, char **argv);
 static int cmd_propose(int argc, char **argv);
 static int cmd_version(int argc, char **argv);
 static int cmd_help(int argc, char **argv);
@@ -43,28 +46,15 @@ static const Cmd CMDS[] = {
     {"show",    cmd_show},
     {"cat",     cmd_cat},
     {"verify",  cmd_verify},
+    {"keygen",  cmd_keygen},
     {"send",    cmd_send},
-    {"commit",  cmd_commit},
+    {"mine",    cmd_mine},
     {"propose", cmd_propose},
     {"version", cmd_version},
     {"help",    cmd_help},
 };
 
 static const int NCMDS = (int)(sizeof(CMDS) / sizeof(CMDS[0]));
-
-/* ── helpers ──────────────────────────────────────────────────────────── */
-
-/* Count newline-terminated lines in STAGED; returns 0 if file is absent. */
-static int staged_count(void)
-{
-    FILE *f = fopen(STAGED_PATH, "r");
-    if (!f) return 0;
-    int n = 0, c;
-    while ((c = fgetc(f)) != EOF)
-        if (c == '\n') n++;
-    fclose(f);
-    return n;
-}
 
 /* ── command implementations ──────────────────────────────────────────── */
 
@@ -94,11 +84,11 @@ static int cmd_status(int argc, char **argv)
            c->head->index, (char *)c->head->hash);
     chain_unload(c);
 
-    int n = staged_count();
+    uint32_t n = mempool_count();
     if (n == 0)
-        printf("Staged:     nothing staged\n");
+        printf("Mempool:    empty\n");
     else
-        printf("Staged:     %d transaction(s) pending\n", n);
+        printf("Mempool:    %u transaction(s) pending\n", n);
     return 0;
 }
 
@@ -218,6 +208,57 @@ static int cmd_verify(int argc, char **argv)
     return 2;
 }
 
+/*
+ * keygen — generate a Dilithium-3 keypair for a user identity.
+ *
+ *   zuno keygen --id <name>
+ *
+ * Writes .chain/keys/<name>.pk and .chain/keys/<name>.sk.
+ * The key is a prerequisite for 'send': every sender must have a key.
+ */
+static int cmd_keygen(int argc, char **argv)
+{
+    const char *id = NULL;
+    for (int i = 2; i < argc - 1; i++) {
+        if (strcmp(argv[i], "--id") == 0) { id = argv[++i]; }
+    }
+
+    if (!id) {
+        fprintf(stderr, "usage: zuno keygen --id <name>\n");
+        return 1;
+    }
+
+    /* Initialise chain dir so .chain/keys/ has a parent. */
+    Chain *c = chain_load();
+    if (!c) {
+        fprintf(stderr, "error: failed to load chain\n");
+        return 2;
+    }
+    chain_unload(c);
+
+    if (wallet_keygen(id) != EXIT_SUCCESS) {
+        fprintf(stderr, "error: keygen failed for '%s' "
+                        "(key may already exist)\n", id);
+        return 2;
+    }
+
+    printf("Generated keypair for '%s'\n", id);
+    printf("  public key : %s/%s.pk\n", WALLET_DIR, id);
+    printf("  secret key : %s/%s.sk  (keep this private)\n", WALLET_DIR, id);
+    return 0;
+}
+
+/*
+ * send — sign a transaction with the sender's Dilithium-3 key and add it
+ *        to the local mempool (.chain/mempool/).
+ *
+ *   zuno send --from <sender> --to <recipient> --amount <value>
+ *
+ * The sender must have a keypair registered with 'keygen' first.
+ * The signed transaction is stored in the mempool until a miner picks it
+ * up with 'mine'.  In a multi-node deployment, the mempool entry would be
+ * broadcast to peers (ADR-019 — not yet implemented).
+ */
 static int cmd_send(int argc, char **argv)
 {
     const char *from   = NULL;
@@ -237,7 +278,7 @@ static int cmd_send(int argc, char **argv)
         return 1;
     }
 
-    /* Accept decimal input (e.g. "10.5") and convert to micro-units. */
+    /* Amount validation */
     double amt_d = atof(amount);
     uint64_t amt_u = (uint64_t)(amt_d * (double)MICRO_PER_TOKEN + 0.5);
     if (amt_u == 0) {
@@ -253,28 +294,69 @@ static int cmd_send(int argc, char **argv)
     }
     chain_unload(c);
 
-    int n = staged_count();
-    if (n >= MAX_TRANSACTIONS) {
+    /* Check sender has a key */
+    if (!wallet_exists(from)) {
         fprintf(stderr,
-                "error: staging area full (%d transactions). commit first.\n",
+                "error: no key found for '%s'\n"
+                "       run: zuno keygen --id %s\n", from, from);
+        return 1;
+    }
+
+    if (mempool_count() >= (uint32_t)MAX_TRANSACTIONS) {
+        fprintf(stderr,
+                "error: mempool full (%d transactions). mine a block first.\n",
                 MAX_TRANSACTIONS);
         return 1;
     }
 
-    FILE *f = fopen(STAGED_PATH, "a");
-    if (!f) {
-        fprintf(stderr, "error: cannot open staging file\n");
+    /* Build the transaction */
+    Transaction tx;
+    memset(&tx, 0, sizeof tx);
+    strncpy(tx.sender,    from, sizeof(tx.sender)    - 1);
+    strncpy(tx.recipient, to,   sizeof(tx.recipient) - 1);
+    tx.amount = amt_u;
+    tx.nonce  = (uint64_t)time(NULL); /* monotonically increasing replay guard */
+
+    /* Sign with sender's private key */
+    uint8_t sk[WALLET_SK_LEN];
+    if (wallet_load_sk(from, sk, WALLET_SK_LEN) != EXIT_SUCCESS) {
+        fprintf(stderr, "error: cannot load secret key for '%s'\n", from);
         return 2;
     }
-    fprintf(f, "%s\t%s\t%llu\n", from, to, (unsigned long long)amt_u);
-    fclose(f);
 
-    printf("Staged: %s -> %s  %.6f\n", from, to,
-           (double)amt_u / (double)MICRO_PER_TOKEN);
+    int rc = sign_transaction(&tx, sk);
+    memset(sk, 0, sizeof sk); /* zero key material immediately */
+
+    if (rc != EXIT_SUCCESS) {
+        fprintf(stderr, "error: failed to sign transaction\n");
+        return 2;
+    }
+
+    if (mempool_add(&tx) != EXIT_SUCCESS) {
+        fprintf(stderr, "error: failed to add transaction to mempool\n");
+        return 2;
+    }
+
+    printf("Sent: %s -> %s  %.6f  (queued in mempool)\n",
+           from, to, (double)amt_u / (double)MICRO_PER_TOKEN);
     return 0;
 }
 
-static int cmd_commit(int argc, char **argv)
+/*
+ * mine — collect pending transactions from the mempool, verify their
+ *        Dilithium-3 signatures, build a PoW block, and append to the chain.
+ *
+ *   zuno mine
+ *
+ * Only transactions whose sender key is present in .chain/keys/ can be
+ * verified.  Unverifiable transactions are skipped with a warning.
+ * In a multi-node deployment, each node would receive sender public keys
+ * alongside the transactions (ADR-019 — not yet implemented).
+ *
+ * After a block is successfully added to the chain the mined transactions
+ * are removed from the mempool.
+ */
+static int cmd_mine(int argc, char **argv)
 {
     (void)argc; (void)argv;
 
@@ -284,45 +366,57 @@ static int cmd_commit(int argc, char **argv)
         return 2;
     }
 
-    FILE *f = fopen(STAGED_PATH, "r");
-    if (!f) {
-        printf("nothing to commit\n");
+    /* Load all pending transactions from the mempool */
+    Transaction pending[MAX_TRANSACTIONS];
+    uint32_t pending_count = 0;
+    if (mempool_load_all(pending, MAX_TRANSACTIONS, &pending_count) != EXIT_SUCCESS) {
+        fprintf(stderr, "error: failed to read mempool\n");
+        chain_unload(c);
+        return 2;
+    }
+
+    if (pending_count == 0) {
+        printf("nothing to mine\n");
         chain_unload(c);
         return 1;
     }
 
-    /* Parse staged transactions */
-    Transaction txns[MAX_TRANSACTIONS];
-    int count = 0;
-    /* line buffer: sender + tab + recipient + tab + amount + newline */
-    char line[2 * MAX_PUBLIC_KEY_LENGTH + 64];
+    /*
+     * Verify each transaction's Dilithium-3 signature against the sender's
+     * public key.  Only verified transactions are included in the block.
+     * This is the key correctness guarantee: a miner cannot forge or tamper
+     * with a transaction because they do not hold the sender's private key.
+     */
+    Transaction verified[MAX_TRANSACTIONS];
+    uint32_t verified_count = 0;
 
-    while (count < MAX_TRANSACTIONS && fgets(line, (int)sizeof(line), f)) {
-        size_t len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n') line[--len] = '\0';
+    for (uint32_t i = 0; i < pending_count; i++) {
+        const char *sender = pending[i].sender;
 
-        char *tab1 = strchr(line, '\t');
-        if (!tab1) continue;
-        *tab1 = '\0';
-        char *tab2 = strchr(tab1 + 1, '\t');
-        if (!tab2) continue;
-        *tab2 = '\0';
+        uint8_t pk[MAX_PUBLIC_KEY_LENGTH];
+        if (wallet_load_pk(sender, pk, MAX_PUBLIC_KEY_LENGTH) != EXIT_SUCCESS) {
+            fprintf(stderr, "warn: no public key for '%s' — skipping tx\n",
+                    sender);
+            continue;
+        }
 
-        memset(&txns[count], 0, sizeof(Transaction));
-        strncpy(txns[count].sender,    line,      sizeof(txns[count].sender)    - 1);
-        strncpy(txns[count].recipient, tab1 + 1,  sizeof(txns[count].recipient) - 1);
-        txns[count].amount = (uint64_t)strtoull(tab2 + 1, NULL, 10);
-        count++;
+        if (verify_transaction(&pending[i], pk) != EXIT_SUCCESS) {
+            fprintf(stderr, "warn: invalid signature from '%s' — skipping tx\n",
+                    sender);
+            continue;
+        }
+
+        verified[verified_count++] = pending[i];
     }
-    fclose(f);
 
-    if (count == 0) {
-        printf("nothing to commit\n");
+    if (verified_count == 0) {
+        printf("nothing to mine (all %u transaction(s) failed verification)\n",
+               pending_count);
         chain_unload(c);
         return 1;
     }
 
-    /* Build the new block */
+    /* Build the block */
     Block *b = block_create(c->head->index + 1, c->head->hash);
     if (!b) {
         fprintf(stderr, "error: block_create failed\n");
@@ -330,16 +424,12 @@ static int cmd_commit(int argc, char **argv)
         return 2;
     }
 
-    for (int i = 0; i < count; i++)
-        b->transactions[i] = txns[i];
-    b->transaction_count = (uint32_t)count;
+    for (uint32_t i = 0; i < verified_count; i++)
+        b->transactions[i] = verified[i];
+    b->transaction_count = verified_count;
 
     compute_merkle_root(b, (char *)b->merkle_root);
 
-    /*
-     * PoW: mine the block so its hash satisfies DIFFICULTY leading hex zeros.
-     * chain_validate (called inside chain_add) enforces this via verify_consensus.
-     */
     b->consensus = CONSENSUS_POW;
     if (mine_block(b, DIFFICULTY) != EXIT_SUCCESS) {
         fprintf(stderr, "error: failed to mine block (nonce exhausted)\n");
@@ -355,9 +445,13 @@ static int cmd_commit(int argc, char **argv)
         return 2;
     }
 
-    printf("Committed block #%u (%s)\n", b->index, (char *)b->hash);
+    printf("Mined block #%u (%s)  [%u tx]\n",
+           b->index, (char *)b->hash, verified_count);
+
+    /* Remove the mined transactions from the mempool */
+    mempool_purge(verified, verified_count);
+
     block_free(b);
-    unlink(STAGED_PATH);
     chain_unload(c);
     return 0;
 }
@@ -396,14 +490,15 @@ static const char *USAGE =
     "\n"
     "Commands:\n"
     "  init                             Initialise chain (creates genesis block)\n"
-    "  status                           Show chain tip and staged transactions\n"
+    "  status                           Show chain tip and mempool\n"
     "  log [--limit N]                  List recent blocks (default 10)\n"
     "  show <hash>                      Show block details\n"
     "  cat  <hash>                      Raw field dump of a block\n"
     "  verify <hash>                    Verify a block's hash integrity\n"
+    "  keygen --id <name>               Generate a Dilithium-3 keypair for <name>\n"
     "  send --from <s> --to <r> --amount <a>\n"
-    "                                   Stage a transaction\n"
-    "  commit                           Build a block from staged transactions\n"
+    "                                   Sign and queue a transaction (mempool)\n"
+    "  mine                             Build a PoW block from mempool transactions\n"
     "  propose                          Broadcast tip to network (stub)\n"
     "  version                          Print version\n"
     "  help [command]                   Show this help or per-command help\n";
@@ -412,12 +507,18 @@ static int cmd_help(int argc, char **argv)
 {
     if (argc >= 3) {
         const char *sub = argv[2];
-        if (strcmp(sub, "send") == 0)
+        if (strcmp(sub, "keygen") == 0)
+            printf("keygen --id <name>\n"
+                   "  Generate a Dilithium-3 keypair for identity <name>.\n"
+                   "  Required before using 'send'.\n");
+        else if (strcmp(sub, "send") == 0)
             printf("send --from <sender> --to <recipient> --amount <value>\n"
-                   "  Stage one transaction. Commit with 'commit'.\n");
-        else if (strcmp(sub, "commit") == 0)
-            printf("commit\n"
-                   "  Build a block from staged transactions and append to chain.\n");
+                   "  Sign a transaction with the sender's private key and\n"
+                   "  add it to the local mempool. Mine with 'mine'.\n");
+        else if (strcmp(sub, "mine") == 0)
+            printf("mine\n"
+                   "  Verify mempool transactions, build a PoW block, and\n"
+                   "  append it to the chain. Clears mined txs from mempool.\n");
         else if (strcmp(sub, "log") == 0)
             printf("log [--limit N]\n"
                    "  List recent blocks. Default limit is 10.\n");
