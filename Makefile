@@ -50,8 +50,10 @@ REL_CFLAGS   := $(BASE_CFLAGS) -O2
 DBG_CFLAGS   := $(BASE_CFLAGS) -g -DDEBUG
 COV_CFLAGS   := $(BASE_CFLAGS) -g -DDEBUG --coverage
 
-LDFLAGS  += -L/usr/local/lib -lcrypto -lssl
+# liboqs must precede OpenSSL: liboqs.a references EVP symbols from libcrypto,
+# so GNU ld requires -loqs before -lcrypto/-lssl (left-to-right resolution).
 LDFLAGS  += -L$(LIBS)/liboqs/build/lib -loqs
+LDFLAGS  += -L/usr/local/lib -lcrypto -lssl
 
 .DEFAULT_GOAL = all
 
