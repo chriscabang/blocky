@@ -6,11 +6,18 @@ on:
   pull_request:
     branches: [develop, main]
 
+# ── liboqs cache key ────────────────────────────────────────────────────────
+# Shared across all three jobs. Bump the suffix (v1 → v2) to force a full
+# liboqs rebuild (e.g. after a major upstream change).
+env:
+  LIBOQS_CACHE_KEY: liboqs-main-${{ runner.os }}-v1
+  LIBOQS_PATH:      ${{ github.workspace }}/../libs/liboqs
+
 jobs:
 
-  # ── 1. deps ──────────────────────────────────────────────────────────────
-  # Install system packages and build liboqs (cached).
-  # Bump the cache key suffix (v1 → v2) to force a full liboqs rebuild.
+  # ── 1. deps ───────────────────────────────────────────────────────────────
+  # Clones and builds liboqs once, then saves it to the Actions cache so the
+  # build and check jobs can restore it without recompiling from scratch.
   deps:
     runs-on: ubuntu-latest
     steps:
@@ -23,27 +30,27 @@ jobs:
         id: cache-liboqs
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/../libs/liboqs
-          key: liboqs-main-${{ runner.os }}-v1
+          path: ${{ env.LIBOQS_PATH }}
+          key:  ${{ env.LIBOQS_CACHE_KEY }}
 
       - name: Clone and build liboqs
         if: steps.cache-liboqs.outputs.cache-hit != 'true'
         run: |
-          mkdir -p "${{ github.workspace }}/../libs"
+          mkdir -p "${{ env.LIBOQS_PATH }}/.."
           git clone --depth 1 \
             https://github.com/open-quantum-safe/liboqs.git \
-            "${{ github.workspace }}/../libs/liboqs"
+            "${{ env.LIBOQS_PATH }}"
           cmake -GNinja \
             -DOQS_BUILD_ONLY_LIB=ON \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
-            -S "${{ github.workspace }}/../libs/liboqs" \
-            -B "${{ github.workspace }}/../libs/liboqs/build"
-          ninja -C "${{ github.workspace }}/../libs/liboqs/build"
+            -S "${{ env.LIBOQS_PATH }}" \
+            -B "${{ env.LIBOQS_PATH }}/build"
+          ninja -C "${{ env.LIBOQS_PATH }}/build"
 
-  # ── 2. build ─────────────────────────────────────────────────────────────
-  # Compile release + debug binaries and all test binaries.
-  # Uploads build/ as an artifact so the check job can reuse the binaries.
+  # ── 2. build ──────────────────────────────────────────────────────────────
+  # Compiles all zuno targets (release, debug, utils, test binaries) and
+  # uploads the build directory as an artifact for the check job.
   build:
     needs: [deps]
     runs-on: ubuntu-latest
@@ -53,13 +60,29 @@ jobs:
       - name: Install compiler dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y gcc libssl-dev libcmocka-dev
+          sudo apt-get install -y gcc cmake ninja-build libssl-dev libcmocka-dev
 
       - name: Restore liboqs cache
+        id: cache-liboqs
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/../libs/liboqs
-          key: liboqs-main-${{ runner.os }}-v1
+          path: ${{ env.LIBOQS_PATH }}
+          key:  ${{ env.LIBOQS_CACHE_KEY }}
+
+      - name: Build liboqs (fallback on cache miss)
+        if: steps.cache-liboqs.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${{ env.LIBOQS_PATH }}/.."
+          git clone --depth 1 \
+            https://github.com/open-quantum-safe/liboqs.git \
+            "${{ env.LIBOQS_PATH }}"
+          cmake -GNinja \
+            -DOQS_BUILD_ONLY_LIB=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -S "${{ env.LIBOQS_PATH }}" \
+            -B "${{ env.LIBOQS_PATH }}/build"
+          ninja -C "${{ env.LIBOQS_PATH }}/build"
 
       - name: Build (release + debug + utils + test binaries)
         run: make all test_bins
@@ -71,9 +94,9 @@ jobs:
           path: build/
           retention-days: 1
 
-  # ── 3. check ─────────────────────────────────────────────────────────────
-  # Runs the full test suite then rebuilds with --coverage and reports
-  # line coverage. Uploads the HTML report as a downloadable artifact.
+  # ── 3. check ──────────────────────────────────────────────────────────────
+  # Downloads the pre-built binaries, runs the full test suite, then rebuilds
+  # with --coverage and generates an lcov HTML report.
   check:
     needs: [build]
     runs-on: ubuntu-latest
@@ -83,13 +106,29 @@ jobs:
       - name: Install test and coverage dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y gcc libssl-dev libcmocka-dev lcov
+          sudo apt-get install -y gcc cmake ninja-build libssl-dev libcmocka-dev lcov
 
       - name: Restore liboqs cache
+        id: cache-liboqs
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/../libs/liboqs
-          key: liboqs-main-${{ runner.os }}-v1
+          path: ${{ env.LIBOQS_PATH }}
+          key:  ${{ env.LIBOQS_CACHE_KEY }}
+
+      - name: Build liboqs (fallback on cache miss)
+        if: steps.cache-liboqs.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${{ env.LIBOQS_PATH }}/.."
+          git clone --depth 1 \
+            https://github.com/open-quantum-safe/liboqs.git \
+            "${{ env.LIBOQS_PATH }}"
+          cmake -GNinja \
+            -DOQS_BUILD_ONLY_LIB=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -S "${{ env.LIBOQS_PATH }}" \
+            -B "${{ env.LIBOQS_PATH }}/build"
+          ninja -C "${{ env.LIBOQS_PATH }}/build"
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
