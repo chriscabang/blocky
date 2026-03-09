@@ -92,7 +92,7 @@ jobs:
           ninja -C "${{ env.LIBOQS_DIR }}/build"
 
       - name: Build (release + debug + utils + test binaries)
-        run: make all test_bins LIBS="$(pwd)/libs"
+        run: make all test_bins LIBS="$(pwd)/libs" MARCH=
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -149,10 +149,10 @@ jobs:
           chmod +x build/test_* build/utils/* build/zuno build/zuno-debug 2>/dev/null || true
 
       - name: Run test suite
-        run: make test LIBS="$(pwd)/libs"
+        run: make test LIBS="$(pwd)/libs" MARCH=
 
       - name: Run coverage
-        run: make coverage LIBS="$(pwd)/libs"
+        run: make coverage LIBS="$(pwd)/libs" MARCH=
 
       - name: Upload coverage report
         if: always()

@@ -39,7 +39,8 @@ COV_BIN      := $(patsubst tests/test_%.c, $(BUILD)/cov/test_%, $(TEST_SRC))
 
 CC       := gcc
 
-BASE_CFLAGS  := -pedantic -Wall -Wextra -march=native
+MARCH        ?= -march=native
+BASE_CFLAGS  := -pedantic -Wall -Wextra $(MARCH)
 BASE_CFLAGS  += -I/usr/local/include
 BASE_CFLAGS  += -I/opt/homebrew/include
 BASE_CFLAGS  += -fmacro-prefix-map=$(ROOT)=.
