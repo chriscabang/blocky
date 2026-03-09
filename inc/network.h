@@ -65,6 +65,30 @@ typedef struct {
 
 typedef struct NetContext NetContext;
 
+/* ── Provider management ──────────────────────────────────────────────── */
+
+typedef struct NetProviders NetProviders;
+
+/*
+ * Load the OQS OpenSSL provider and the default OpenSSL provider into the
+ * default library context.  Must be called before creating any NetContext
+ * that uses cfg->pqc_group = NET_PQC_GROUP.
+ *
+ * Returns a handle on success, NULL if the OQS provider is not installed
+ * on this system (logged at warn level).  On NULL, callers must fall back
+ * to pqc_group = NULL (classical TLS) — this is not a fatal error.
+ *
+ * Each call returns an independent handle; call net_providers_free() when
+ * the application shuts down.
+ */
+NetProviders *net_providers_load(void);
+
+/*
+ * Unload the providers and free the handle.
+ * Safe to call with NULL.
+ */
+void net_providers_free(NetProviders *p);
+
 /* ── Lifecycle ────────────────────────────────────────────────────────── */
 
 /*

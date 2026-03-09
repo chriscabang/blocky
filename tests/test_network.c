@@ -2,9 +2,11 @@
  *
  * Test groups
  * ───────────
+ *   providers       — net_providers_load/free: OQS provider lifecycle
  *   context/server  — net_context_server() argument validation and lifecycle
  *   context/client  — net_context_client() argument validation and lifecycle
  *   serialize       — net_serialize_block() correctness and bounds checking
+ *   deserialize     — net_deserialize_block() correctness and bounds checking
  *   broadcast       — net_broadcast_block() argument validation
  *
  * Network note
@@ -12,8 +14,8 @@
  * These are unit tests; no live TLS connections are made.  Context-creation
  * tests that require a real certificate use write_test_cert() to generate an
  * ephemeral RSA-2048 self-signed cert in /tmp, then remove it in teardown.
- * Tests that exercise PQC group enforcement are omitted here because they
- * require the OQS OpenSSL provider to be loaded at runtime (see ADR-014).
+ * Provider tests handle both "installed" and "absent" OQS provider outcomes
+ * without failing the suite — the OQS provider is optional at test time.
  */
 
 #include <stdarg.h>
@@ -414,6 +416,64 @@ static void test_deserialize_roundtrip(void **state)
     block_free(orig);
 }
 
+/* ── providers ────────────────────────────────────────────────────────── */
+
+/*
+ * net_providers_free(NULL) must not crash.
+ */
+static void test_providers_free_null(void **state)
+{
+    (void)state;
+    net_providers_free(NULL); /* must not crash */
+}
+
+/*
+ * net_providers_load() either returns a valid handle (OQS provider installed)
+ * or NULL (provider absent — not a fatal error).  net_providers_free() must
+ * accept both outcomes without crashing.
+ */
+static void test_providers_load_or_null(void **state)
+{
+    (void)state;
+    NetProviders *p = net_providers_load();
+    /* Non-null or null are both valid outcomes — OQS provider may not be installed. */
+    net_providers_free(p);
+}
+
+/*
+ * When the OQS provider is loaded, creating a server context with
+ * NET_PQC_GROUP must succeed.  When it is absent, the same config must
+ * fail (SSL_CTX_set1_groups_list rejects the unknown group).
+ *
+ * This test covers both cases: the outcome is determined by whether the
+ * OQS provider is installed on the current system.
+ */
+static void test_pqc_group_requires_provider(void **state)
+{
+    CertState *s = *state;
+
+    NetProviders *p = net_providers_load();
+
+    NetConfig cfg = {
+        .cert_file = s->cert,
+        .key_file  = s->key,
+        .pqc_group = NET_PQC_GROUP,
+        .port      = 4433,
+    };
+    NetContext *ctx = net_context_server(&cfg);
+
+    if (p) {
+        /* Provider loaded: PQC group must be accepted. */
+        assert_non_null(ctx);
+    } else {
+        /* Provider absent: group is unknown to OpenSSL, context must fail. */
+        assert_null(ctx);
+    }
+
+    net_context_free(ctx);
+    net_providers_free(p);
+}
+
 /* ── broadcast (argument validation only — no live network) ───────────── */
 
 /* NULL context must return -1. */
@@ -546,6 +606,15 @@ int main(void)
                                         setup_none, teardown_none),
     };
 
+    const struct CMUnitTest provider_tests[] = {
+        cmocka_unit_test_setup_teardown(test_providers_free_null,
+                                        setup_none,  teardown_none),
+        cmocka_unit_test_setup_teardown(test_providers_load_or_null,
+                                        setup_none,  teardown_none),
+        cmocka_unit_test_setup_teardown(test_pqc_group_requires_provider,
+                                        setup_certs, teardown_certs),
+    };
+
     const struct CMUnitTest broadcast_tests[] = {
         cmocka_unit_test_setup_teardown(test_broadcast_null_ctx,
                                         setup_none,  teardown_none),
@@ -558,6 +627,8 @@ int main(void)
     };
 
     int failures = 0;
+    failures += cmocka_run_group_tests_name("network/providers",
+                                            provider_tests,    NULL, NULL);
     failures += cmocka_run_group_tests_name("network/context/server",
                                             server_tests,      NULL, NULL);
     failures += cmocka_run_group_tests_name("network/context/client",

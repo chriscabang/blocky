@@ -4,6 +4,7 @@
 
 #include <arpa/inet.h>
 #include <openssl/err.h>
+#include <openssl/provider.h>
 #include <openssl/ssl.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -23,6 +24,69 @@ struct NetContext {
     char      bind_addr[64];
     uint16_t  port;
 };
+
+struct NetProviders {
+    OSSL_PROVIDER *deflt;
+    OSSL_PROVIDER *oqs;
+};
+
+/* ── Provider management ──────────────────────────────────────────────── */
+
+NetProviders *net_providers_load(void)
+{
+    NetProviders *p = calloc(1, sizeof(*p));
+    if (!p) {
+        log_error("net_providers_load: out of memory");
+        return NULL;
+    }
+
+    /*
+     * Probe for the OQS provider first.  If it is not installed, return NULL.
+     *
+     * A failed OSSL_PROVIDER_load can transition OpenSSL to explicit-provider
+     * mode on some platforms (notably macOS with Homebrew OpenSSL), leaving
+     * no active providers and breaking all subsequent SSL_CTX_new() calls.
+     * Mitigate by clearing the error stack and re-loading the default provider
+     * to restore normal TLS operation for the rest of the process.
+     * The restored default handle is not tracked — it persists for the
+     * process lifetime, which is the correct duration for a global provider.
+     */
+    p->oqs = OSSL_PROVIDER_load(NULL, "oqsprovider");
+    if (!p->oqs) {
+        ERR_clear_error();
+        (void)OSSL_PROVIDER_load(NULL, "default");
+        log_warn("net_providers_load: OQS OpenSSL provider not available "
+                 "(install oqs-provider for PQC key exchange); "
+                 "use pqc_group = NULL to fall back to classical TLS");
+        free(p);
+        return NULL;
+    }
+
+    /*
+     * OQS provider loaded successfully.  Loading any provider explicitly
+     * disables OpenSSL's implicit default-provider loading, so we must also
+     * load the default provider to keep standard algorithms available.
+     */
+    p->deflt = OSSL_PROVIDER_load(NULL, "default");
+    if (!p->deflt) {
+        log_error("net_providers_load: failed to load OpenSSL 'default' provider");
+        OSSL_PROVIDER_unload(p->oqs);
+        free(p);
+        return NULL;
+    }
+
+    log_info("OQS OpenSSL provider loaded — PQC key exchange (%s) available",
+             NET_PQC_GROUP);
+    return p;
+}
+
+void net_providers_free(NetProviders *p)
+{
+    if (!p) return;
+    if (p->oqs)   OSSL_PROVIDER_unload(p->oqs);
+    if (p->deflt) OSSL_PROVIDER_unload(p->deflt);
+    free(p);
+}
 
 /* ── TLS helpers ──────────────────────────────────────────────────────── */
 

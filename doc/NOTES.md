@@ -1602,15 +1602,33 @@ broken, P-256 still provides classical security. This defence-in-depth is the
 standard NIST-recommended transition approach.
 
 The OQS OpenSSL provider must be loaded at runtime for PQC groups to be
-available. Tests use `pqc_group = NULL` to avoid a hard dependency on the
-provider in CI environments.
+available. The public API is:
+
+```c
+NetProviders *net_providers_load(void);   /* load oqsprovider + default */
+void          net_providers_free(NetProviders *p);
+```
+
+`net_providers_load()` returns `NULL` with a `WARN` log if the OQS provider
+is not installed — callers fall back to `pqc_group = NULL` (classical TLS).
+A failed load attempt can transition OpenSSL to explicit-provider mode on
+some platforms (macOS/Homebrew); the implementation mitigates this by calling
+`ERR_clear_error()` and restoring the default provider explicitly after any
+failed OQS probe, so that normal TLS operation continues for the process.
+
+Install the OQS provider separately from `liboqs`:
+```
+brew install oqs-provider   # macOS
+# or build from https://github.com/open-quantum-safe/oqs-provider
+```
 
 #### Test Coverage
 
-25 tests across 5 groups in `test_network.c`:
+28 tests across 6 groups in `test_network.c`:
 
 | Group | Tests |
 |---|---|
+| `network/providers` | free(NULL), load-or-null (graceful when absent), pqc-group-requires-provider (works iff loaded) |
 | `network/context/server` | NULL config, null cert, null key, missing cert file, valid config, free(NULL) |
 | `network/context/client` | NULL config, no cert required, missing ca_file |
 | `network/serialize` | NULL block, NULL buf, zero bufsz, buf too small, basic (field tags), NUL-terminated, distinct blocks |
@@ -2050,6 +2068,6 @@ Previously completed:
 
 | Work Item | Notes |
 |---|---|
-| OQS OpenSSL provider runtime loading | Required for `NET_PQC_GROUP = p256_kyber768` in production |
+| OQS OpenSSL provider runtime loading | Done — `net_providers_load/free` in `network.c`; loads `oqsprovider` + `default`; graceful NULL on absence; restores default provider on failed probe (macOS/Homebrew safety) |
 | Multi-threaded `net_server_run()` | One connection at a time today; pthread-based fan-in for higher concurrency |
 | `make check` in CI | Done — `.github/workflows/ci.yml`; triggers on push/PR to `develop`/`main`; installs deps, builds liboqs (cached), runs `make check`, uploads HTML coverage report as artifact |
