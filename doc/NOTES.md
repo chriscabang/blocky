@@ -2068,6 +2068,11 @@ Previously completed:
 
 | Work Item | Notes |
 |---|---|
-| OQS OpenSSL provider runtime loading | Done — `net_providers_load/free` in `network.c`; loads `oqsprovider` + `default`; graceful NULL on absence; restores default provider on failed probe (macOS/Homebrew safety) |
 | Multi-threaded `net_server_run()` | One connection at a time today; pthread-based fan-in for higher concurrency |
+
+Previously completed:
+
+| Work Item | Notes |
+|---|---|
+| OQS OpenSSL provider runtime loading | Done — `net_providers_load/free` in `network.c`; loads `oqsprovider` + `default`; graceful NULL on absence; restores default provider on failed probe (macOS/Homebrew safety) |
 | `make check` in CI | Done — `.github/workflows/ci.yml`; triggers on push/PR to `develop`/`main`; installs deps, builds liboqs (cached), runs `make check`, uploads HTML coverage report as artifact |
