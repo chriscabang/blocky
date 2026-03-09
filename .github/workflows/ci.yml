@@ -11,10 +11,14 @@ on:
 # The Makefile default is ../libs, so we pass LIBS=$(pwd)/libs on
 # every make invocation to override it without touching the Makefile.
 #
-# Bump LIBOQS_KEY (v1 → v2) to force a full liboqs rebuild.
+# LIBOQS_COMMIT must match the local install (../libs/liboqs).
+# Recent liboqs main renamed OQS_SIG_alg_dilithium_3 → OQS_SIG_alg_ml_dsa_65;
+# pinning to the same commit keeps CI and local in sync.
+# Bump LIBOQS_KEY when updating the commit.
 env:
-  LIBOQS_KEY: liboqs-main-ubuntu-v1
-  LIBOQS_DIR: libs/liboqs
+  LIBOQS_COMMIT: a554b36d
+  LIBOQS_KEY:    liboqs-a554b36d-ubuntu-v1
+  LIBOQS_DIR:    libs/liboqs
 
 jobs:
 
@@ -40,9 +44,9 @@ jobs:
         if: steps.cache-liboqs.outputs.cache-hit != 'true'
         run: |
           mkdir -p "${{ env.LIBOQS_DIR }}"
-          git clone --depth 1 \
-            https://github.com/open-quantum-safe/liboqs.git \
+          git clone https://github.com/open-quantum-safe/liboqs.git \
             "${{ env.LIBOQS_DIR }}"
+          git -C "${{ env.LIBOQS_DIR }}" checkout ${{ env.LIBOQS_COMMIT }}
           cmake -GNinja \
             -DOQS_BUILD_ONLY_LIB=ON \
             -DBUILD_SHARED_LIBS=OFF \
@@ -76,9 +80,9 @@ jobs:
         if: steps.cache-liboqs.outputs.cache-hit != 'true'
         run: |
           mkdir -p "${{ env.LIBOQS_DIR }}"
-          git clone --depth 1 \
-            https://github.com/open-quantum-safe/liboqs.git \
+          git clone https://github.com/open-quantum-safe/liboqs.git \
             "${{ env.LIBOQS_DIR }}"
+          git -C "${{ env.LIBOQS_DIR }}" checkout ${{ env.LIBOQS_COMMIT }}
           cmake -GNinja \
             -DOQS_BUILD_ONLY_LIB=ON \
             -DBUILD_SHARED_LIBS=OFF \
@@ -122,9 +126,9 @@ jobs:
         if: steps.cache-liboqs.outputs.cache-hit != 'true'
         run: |
           mkdir -p "${{ env.LIBOQS_DIR }}"
-          git clone --depth 1 \
-            https://github.com/open-quantum-safe/liboqs.git \
+          git clone https://github.com/open-quantum-safe/liboqs.git \
             "${{ env.LIBOQS_DIR }}"
+          git -C "${{ env.LIBOQS_DIR }}" checkout ${{ env.LIBOQS_COMMIT }}
           cmake -GNinja \
             -DOQS_BUILD_ONLY_LIB=ON \
             -DBUILD_SHARED_LIBS=OFF \
