@@ -214,8 +214,8 @@ static int cmd_verify(int argc, char **argv)
  *
  * The sender must have a keypair registered with 'keygen' first.
  * The signed transaction is stored in the mempool until a miner picks it
- * up with 'mine'.  In a multi-node deployment, the mempool entry would be
- * broadcast to peers (ADR-019 — not yet implemented).
+ * up with 'mine'.  In a multi-node deployment, use 'propose' to broadcast
+ * the mined block to peers after mining.
  */
 static int cmd_send(int argc, char **argv)
 {
@@ -308,8 +308,6 @@ static int cmd_send(int argc, char **argv)
  *
  * Only transactions whose sender key is present in .chain/keys/ can be
  * verified.  Unverifiable transactions are skipped with a warning.
- * In a multi-node deployment, each node would receive sender public keys
- * alongside the transactions (ADR-019 — not yet implemented).
  *
  * After a block is successfully added to the chain the mined transactions
  * are removed from the mempool.

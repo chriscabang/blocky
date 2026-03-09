@@ -1,4 +1,4 @@
-/* proposeblock.c — Demo: mine a block and broadcast it to a peer over TLS.
+/* propose_block.c — Demo: mine a block and broadcast it to a peer over TLS.
  *
  * Usage: proposeblock <peer_addr> <peer_port> <cert.pem> <key.pem> [ca.pem]
  *
@@ -29,7 +29,7 @@ int main(int argc, char *argv[])
 {
     if (argc < 5 || argc > 6) {
         fprintf(stderr,
-                "usage: proposeblock <peer_addr> <peer_port>"
+                "usage: propose_block <peer_addr> <peer_port>"
                 " <cert.pem> <key.pem> [ca.pem]\n");
         return 1;
     }

@@ -24,6 +24,7 @@ The git log is the record of *what* changed; this file is the record of *why*.
   - [On-Disk Layout](#on-disk-layout)
   - [Consensus Model](#consensus-model)
   - [Network Model](#network-model)
+  - [Directory Structure](#directory-structure)
 - [Part II — Design Philosophy](#part-ii--design-philosophy)
   - [SOLID in C](#solid-in-c)
   - [Clean Code Conventions](#clean-code-conventions)
@@ -60,17 +61,22 @@ Each `.c`/`.h` pair owns exactly one responsibility. `main.c` is the only
 module permitted to coordinate across module boundaries.
 
 ```
-src/main.c          CLI dispatcher — init, send, commit, propose, log, show, …
+src/main.c          CLI dispatcher — init, send, mine, propose, log, show, …
 src/chain.c         In-memory chain tip, pool allocator, validate, add, propose
 src/block.c         Block struct — create, compute_hash, verify_hash, free
 src/storage.c       Git-style .chain/ object store and HEAD ref management
 src/network.c       TLS 1.3 server/client, block serialize/deserialize, broadcast
-src/consensus.c     verify_consensus() dispatch → PoW or PoS rules
+src/consensus.c     verify_consensus() dispatch → PoW or PoS rules (ADR-003)
 src/pow.c           Proof-of-Work mining (midstate optimization) and validate
-src/pos.c           Proof-of-Stake validator registry, stake, select, validate
-src/crypto.c        block_hash(), compute_merkle_root(), sign/verify stubs
+src/pos.c           PosEntry type — stake-weighted selection helper (not registry)
+src/crypto.c        block_hash(), compute_merkle_root()
 src/sha256.c        Self-contained FIPS 180-4 SHA-256 — no OpenSSL in hash path
 src/transaction.c   Transaction struct, Dilithium-3 sign and verify
+src/validator.c     Validator registry — identity, stake, disk persistence (ADR-017)
+src/vrf.c           VRF leader election — slot message, prove, verify (ADR-018)
+src/key.c           Dilithium-3 key store — generate, load pk/sk (.chain/keys/)
+src/mempool.c       Signed transaction queue — add, load, count, purge (.chain/mempool/)
+src/equivocation.c  Slot-based double-propose guard (.chain/slots/)
 src/log.c           Level-gated logger — ERROR/WARN/INFO/DEBUG
 ```
 
@@ -106,9 +112,9 @@ User: zuno send --from alice --to bob --amount 10.5
           ├─► sign_transaction()   [Dilithium-3 signature — ADR-009]
           │
           ▼
-  .chain/STAGED  (tab-separated staging area — ADR-008)
+  .chain/mempool/<txhash>  (one file per transaction — ADR-019)
 
-User: zuno commit
+User: zuno mine
           │
           ▼
   block_create(index, prev_hash)
@@ -148,7 +154,10 @@ Mirrors git's `.git/` structure exactly (ADR-005):
 │   │   └── a3f8c2d1e5b6f790…  serialized Block struct (binary)
 │   └── 00/
 │       └── 0000e4f2c9a3b1d8…
-├── STAGED                      tab-separated pending transactions
+├── mempool/                    signed pending transactions (one file per tx hash)
+├── keys/                       Dilithium-3 keypairs (.pk public, .sk secret)
+├── slots/                      equivocation guard (one file per PoS proposer)
+├── validators/                 validator registry (one binary file per validator)
 ├── peers                       one ip:port per line (for propose)
 ├── tls-cert.pem                node TLS certificate
 └── tls-key.pem                 node TLS private key (chmod 600)
@@ -171,11 +180,11 @@ to how `git checkout` works.
 | `0` | `CONSENSUS_POW` | Hash must have ≥ `DIFFICULTY` leading hex zeros |
 | `1` | `CONSENSUS_POS` | Hash integrity + proposer stake + VRF proof + Dilithium-3 signature (ADR-003) |
 
-`commit` (CLI) always sets `CONSENSUS_POW` and calls `mine_block()`.
+`mine` (CLI) always sets `CONSENSUS_POW` and calls `mine_block()`.
 `chain_validate()` calls `verify_consensus()` for every `chain_add()`.
 
-Every-tenth-block PoS selection (`index % 10 == 0`) is the current placeholder
-in `pos_validate_block()` — VRF leader election is pending ADR-003.
+PoS leader selection uses stake + VRF proof + Dilithium-3 signature
+(ADR-003, fully implemented in `consensus.c` `verify_pos_rules()`).
 
 ### Network Model
 
@@ -198,6 +207,44 @@ Only block **header fields** are broadcast; full transaction bodies
 (Dilithium-3 signatures up to ~145 KB/block) are fetched on demand.
 `net_server_run()` accepts `Chain *chain`; passing `NULL` enables log-only
 monitor mode.
+
+### Directory Structure
+
+Source files are organized into two logical tiers within the standard
+`src/` and `inc/` directories. No physical subdirectory split is applied
+— the Makefile uses `wildcard src/*.c` — but the logical boundary is
+enforced by review and naming convention.
+
+**Core protocol** — modules that define the blockchain protocol itself:
+
+```
+inc/block.h        src/block.c
+inc/chain.h        src/chain.c
+inc/storage.h      src/storage.c
+inc/consensus.h    src/consensus.c
+inc/crypto.h       src/crypto.c
+inc/sha256.h       src/sha256.c
+inc/transaction.h  src/transaction.c
+inc/pow.h          src/pow.c
+inc/pos.h          src/pos.c
+inc/vrf.h          src/vrf.c
+inc/validator.h    src/validator.c
+inc/equivocation.h src/equivocation.c
+inc/mempool.h      src/mempool.c
+inc/key.h          src/key.c
+```
+
+**Infrastructure** — modules that support the protocol but are not
+part of the blockchain state machine:
+
+```
+inc/log.h          src/log.c       — structured logging
+inc/network.h      src/network.c   — TLS transport
+```
+
+The infrastructure boundary is important: `log.h` and `network.h` may be
+replaced or mocked in test environments without affecting protocol logic.
+The core modules never depend on infrastructure headers — only on each other.
 
 ---
 
@@ -725,7 +772,7 @@ chain-level operations. Two architectural bugs were found:
 | `block.h / block.c` | `Block` type + single-block ops: `create`, `compute_hash`, `verify_hash`, `free` |
 | `chain.h / chain.c` | In-memory chain with pool allocator: `load`, `unload`, `validate`, `add`, `propose` |
 
-`blockchain.h` is kept as a compatibility shim that includes both headers.
+`blockchain.h` was removed (ADR-015 dead code removal); include `block.h` and `chain.h` directly.
 
 #### Pool Allocator Design
 

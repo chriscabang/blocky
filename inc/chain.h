@@ -85,8 +85,7 @@ int chain_propose(Chain *c, const Block *block);
  * whose subtree has the greatest total weight:
  *
  *   PoW (consensus == 0): weight = 1 per block
- *   PoS (consensus == 1): weight = 1 per block (stake-weighted once ADR-003
- *                          validator registry is wired)
+ *   PoS (consensus == 1): stake-weighted via the validator registry (ADR-003)
  *
  * Tie-break: lexicographically smaller hash wins (deterministic).
  *
@@ -99,21 +98,5 @@ int chain_propose(Chain *c, const Block *block);
  * @return EXIT_SUCCESS or EXIT_FAILURE.
  */
 int chain_fork_choice(Chain *c);
-
-/**
- * @brief Log info about the current chain tip.
- */
-void chain_info(const Chain *c);
-
-/**
- * @brief Log details for the block identified by hash.
- * @return EXIT_SUCCESS or EXIT_FAILURE.
- */
-int chain_show(const Chain *c, const char *hash);
-
-/**
- * @brief List blocks starting from HEAD, up to blocks_per_page entries.
- */
-void chain_list(const Chain *c, unsigned int blocks_per_page);
 
 #endif /* CHAIN_H */

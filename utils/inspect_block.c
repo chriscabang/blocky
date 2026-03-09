@@ -1,7 +1,7 @@
-/* insertblock.c — Demo: read and inspect a block from the object store.
+/* inspect_block.c — Demo: read and inspect a block from the object store.
  *
- * Usage: insertblock <hash>
- *        insertblock HEAD          (resolves the current chain tip)
+ * Usage: inspect_block <hash>
+ *        inspect_block HEAD          (resolves the current chain tip)
  *
  * Reads the block from .chain/blocks/<hash>, prints every header field
  * and transaction summary, then verifies the stored hash against a freshly
@@ -20,7 +20,7 @@
 int main(int argc, char *argv[])
 {
     if (argc != 2) {
-        fprintf(stderr, "usage: insertblock <hash|HEAD>\n");
+        fprintf(stderr, "usage: inspect_block <hash|HEAD>\n");
         return 1;
     }
 

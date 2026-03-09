@@ -42,14 +42,14 @@ tamper-proof record of all truth — nothing forgotten, nothing alterable.
 
 ## Features
 
-- **Git-like workflow** — `send` stages transactions, `commit` mines and seals a block, `propose` broadcasts it
+- **Git-like workflow** — `send` queues a signed transaction, `mine` builds and seals a PoW block, `propose` broadcasts it
 - **Post-quantum cryptography** — Dilithium-3 (transaction signatures), p256_kyber768 hybrid TLS key exchange
 - **Dual consensus** — Proof-of-Work (SHA-256, configurable difficulty) and Proof-of-Stake (every 10th block)
 - **Self-contained SHA-256** — FIPS 180-4 implementation with no OpenSSL dependency in the hot path
 - **Git-style object store** — each block stored as a file named by its hash under `.chain/blocks/`
 - **TLS 1.3 minimum** enforced on all peer connections; bidirectional close_notify on teardown
 - **No global state, no `exit()` in library code** — clean C architecture (SOLID principles)
-- **322 unit tests** across 19 test suites via CMocka
+- **336 unit tests** across 20 test suites via CMocka
 
 ---
 
@@ -90,13 +90,19 @@ tamper-proof record of all truth — nothing forgotten, nothing alterable.
 | `chain.c` | In-memory chain tip, pool allocator, validate, add, propose |
 | `storage.c` | Git-style object store — `.chain/blocks/<hash>`, HEAD ref |
 | `block.c` | Block struct, `block_create`, `block_compute_hash`, `block_verify_hash` |
-| `crypto.c` | Block hashing, Merkle root, Dilithium sign/verify stubs |
+| `crypto.c` | Block hashing, Merkle root |
 | `sha256.c` | Self-contained FIPS 180-4 SHA-256 (no OpenSSL) |
 | `pow.c` | Proof-of-Work mining with midstate optimization |
-| `pos.c` | Proof-of-Stake validator registry, stake-weighted selection |
-| `network.c` | TLS 1.3 server/client, block serialization, broadcast |
+| `pos.c` | Proof-of-Stake entry type (`PosEntry`) and stake-weighted selection |
+| `network.c` | TLS 1.3 server/client, block serialization, broadcast, OQS provider |
 | `transaction.c` | Transaction struct, Dilithium-3 sign and verify |
-| `consensus.c` | `verify_consensus` — dispatches to PoW or PoS based on block field |
+| `consensus.c` | `verify_consensus` — dispatches to PoW or PoS rules (ADR-003) |
+| `validator.c` | Validator registry — identity, stake, disk persistence (ADR-017) |
+| `vrf.c` | VRF leader election — slot message, prove, verify (ADR-018) |
+| `key.c` | Dilithium-3 key store — generate, load pk/sk (`.chain/keys/`) |
+| `mempool.c` | Signed transaction queue — add, load, count, purge (`.chain/mempool/`) |
+| `equivocation.c` | Slot-based double-propose guard (`.chain/slots/`) |
+| `log.c` | Level-gated logger — ERROR/WARN/INFO/DEBUG |
 | `main.c` | CLI dispatcher — all user-facing subcommands |
 
 ---
@@ -149,7 +155,7 @@ make all
 Other build targets:
 
 ```sh
-make test       # Build and run all 322 unit tests; print aggregated summary
+make test       # Build and run all 336 unit tests; print aggregated summary
 make check      # Run tests then report line coverage (requires lcov)
 make coverage   # Coverage report only
 make clean      # Remove build/ and .chain/
@@ -167,8 +173,8 @@ make help       # List all targets
 # 2. Stage a transaction
 ./build/zuno send --from alice --to bob --amount 10.5
 
-# 3. Mine a block containing the staged transactions
-./build/zuno commit
+# 3. Mine a block containing the queued transactions
+./build/zuno mine
 
 # 4. Check the chain
 ./build/zuno log
@@ -184,14 +190,14 @@ Usage: zuno <command> [options]
 
 Commands:
   init                             Initialise chain (creates genesis block)
-  status                           Show chain tip and staged transactions
+  status                           Show chain tip and mempool
   log [--limit N]                  List recent blocks (default 10)
   show <hash>                      Show block details
   cat  <hash>                      Raw field dump of a block
   verify <hash>                    Verify a block's hash integrity
   send --from <s> --to <r> --amount <a>
-                                   Stage a transaction
-  commit                           Build a block from staged transactions
+                                   Sign and queue a transaction (mempool)
+  mine                             Build a PoW block from mempool transactions
   propose                          Broadcast tip to peers via .chain/peers
   version                          Print version
   help [command]                   Show this help or per-command help
@@ -207,31 +213,36 @@ arithmetic in the core.
 
 ### 1. Exchanging Money
 
-zuno uses a **stage-then-commit** workflow. Transactions are staged in
-`.chain/STAGED` (a plain text file) and sealed into a block on `commit`.
+zuno uses a **send-then-mine** workflow. Transactions are signed with
+Dilithium-3 and queued in `.chain/mempool/`. A `mine` command verifies
+their signatures, bundles them into a PoW block, and appends it to the chain.
 
 ```sh
-# Initialize the chain if starting fresh
+# Initialize the chain if starting fresh (also generates the genesis block)
 ./build/zuno init
 # Initialised chain at .chain/
 # Tip: block #0 (a3f8c2...)
 
-# Stage one transaction
-./build/zuno send --from alice --to bob --amount 25.0
-# Staged: alice -> bob  25.000000
+# Generate Dilithium-3 keypairs (one-time; stored in .chain/keys/)
+./build/utils/key_gen alice
+./build/utils/key_gen carol
 
-# Stage a second transaction in the same block
+# Queue a signed transaction
+./build/zuno send --from alice --to bob --amount 25.0
+# Sent: alice -> bob  25.000000  (queued in mempool)
+
+# Queue a second transaction for the same block
 ./build/zuno send --from carol --to dave --amount 7.5
-# Staged: carol -> dave  7.500000
+# Sent: carol -> dave  7.500000  (queued in mempool)
 
 # Check what is pending
 ./build/zuno status
 # Chain tip:  block #0 (a3f8c2d1...)
-# Staged:     2 transaction(s) pending
+# Mempool:    2 transaction(s) pending
 
-# Commit: mines a PoW block and appends it to the chain
-./build/zuno commit
-# Committed block #1 (0000e4f2...)
+# Mine: verify signatures, build a PoW block, append to chain
+./build/zuno mine
+# Mined block #1 (0000e4f2...)  [2 tx]
 
 # Confirm
 ./build/zuno log
@@ -239,8 +250,8 @@ zuno uses a **stage-then-commit** workflow. Transactions are staged in
 # block #0    a3f8c2d1...  ts=1700000000  txns=0
 ```
 
-Up to **10 transactions** can be staged per block (`MAX_TRANSACTIONS`).
-Staging beyond that limit returns an error — commit the current batch first.
+Up to **10 transactions** can be queued per block (`MAX_TRANSACTIONS`).
+Queuing beyond that limit returns an error — mine the current batch first.
 
 #### With Dilithium-3 signatures (programmatic)
 
@@ -274,7 +285,7 @@ chmod 600 alice.key
 
 ### 2. Mining a Block
 
-`zuno commit` mines automatically. For standalone PoW mining:
+`zuno mine` mines automatically. For standalone PoW mining:
 
 ```sh
 # Mine an empty block at default difficulty (4 leading hex zeros)
@@ -431,7 +442,7 @@ echo "192.168.1.20:8333" > .chain/peers
 
 # Mine a block and broadcast it
 ./build/zuno send --from alice --to bob --amount 10
-./build/zuno commit
+./build/zuno mine
 ./build/zuno propose
 ```
 
@@ -571,13 +582,14 @@ Example output:
   test_consensus                               12       0      12
   test_crypto                                  20       0      20
   test_equivocation                            10       0      10
+  test_integration_e2e                          6       0       6
   test_integration_miner                        9       0       9
-  test_integration_payment                      6       0       6
+  test_integration_payment                      8       0       8
   test_key                                     18       0      18
   test_log                                      8       0       8
-  test_main                                    25       0      25
+  test_main                                    28       0      28
   test_mempool                                 15       0      15
-  test_network                                 25       0      25
+  test_network                                 28       0      28
   test_pos                                     13       0      13
   test_pow                                     13       0      13
   test_sha256                                  19       0      19
@@ -586,7 +598,7 @@ Example output:
   test_validator                               21       0      21
   test_vrf                                     17       0      17
   ──────────────────────────────────────────────────────────────
-  TOTAL                                       322       0     322
+  TOTAL                                       336       0     336
 ```
 
 ---
@@ -596,7 +608,7 @@ Example output:
 ```
 zuno/
 ├── src/                    C source files
-│   ├── main.c              CLI dispatcher (init, send, commit, propose, …)
+│   ├── main.c              CLI dispatcher (init, send, mine, propose, …)
 │   ├── chain.c             In-memory chain with pool allocator
 │   ├── block.c             Block create / hash / verify / sign
 │   ├── storage.c           Git-style .chain/ object store + Merkle re-verify on read
@@ -625,7 +637,7 @@ zuno/
 │   ├── inspect_block.c     Block field inspector
 │   └── inspect_chain.c     Chain walker
 ├── doc/
-│   └── NOTES.md            Architecture decision records (ADR-001 – ADR-018)
+│   └── NOTES.md            Architecture decision records (ADR-001 – ADR-019)
 ├── Makefile
 └── README.md
 ```
@@ -635,7 +647,6 @@ zuno/
 ```
 .chain/
 ├── HEAD              — hash of the current tip block
-├── STAGED            — staged transactions (tab-separated, one per line)
 ├── peers             — peer list for propose (one ip:port per line)
 ├── tls-cert.pem      — node TLS certificate
 ├── tls-key.pem       — node TLS private key (chmod 600)
