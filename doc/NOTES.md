@@ -2045,34 +2045,6 @@ The content-addressed filename makes add idempotent (same transaction re-queued 
 
 ## Part IV — Pending Work
 
-Items that are designed (ADR adopted) but not yet implemented:
-
-### High Priority
-
-_(No items — all ADR-003 PoS signature work is complete.)_
-
-### Medium Priority
-
-_(No items — all medium-priority work is complete as of this revision.)_
-
-Previously completed:
-
-| Work Item | ADR | Status |
-|---|---|---|
-| Stake threshold enforcement | ADR-010 | Done — `validator_check_stake()` in `consensus.c` |
-| Equivocation guard | ADR-010 | Done — `equivocation.c/.h`; check in `verify_pos_rules`, record in `chain_add` |
-| `net_server_run()` receive side | ADR-014 | Done — GETBODY protocol; broadcaster responds with binary `Transaction[]` |
-| Full Merkle re-verification on read | ADR-012 | Done — `storage_read` / `storage_read_into` verify `compute_merkle_root` on blocks with transactions |
-
-### Low Priority / Future
-
 | Work Item | Notes |
 |---|---|
-| Multi-threaded `net_server_run()` | One connection at a time today; pthread-based fan-in for higher concurrency |
-
-Previously completed:
-
-| Work Item | Notes |
-|---|---|
-| OQS OpenSSL provider runtime loading | Done — `net_providers_load/free` in `network.c`; loads `oqsprovider` + `default`; graceful NULL on absence; restores default provider on failed probe (macOS/Homebrew safety) |
-| `make check` in CI | Done — `.github/workflows/ci.yml`; triggers on push/PR to `develop`/`main`; installs deps, builds liboqs (cached), runs `make check`, uploads HTML coverage report as artifact |
+| Multi-threaded `net_server_run()` | One connection at a time; pthread-based fan-in for higher concurrency (see ADR-014) |
