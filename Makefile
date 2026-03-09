@@ -68,7 +68,7 @@ $(UTILS_DIR):
 	mkdir -p $(UTILS_DIR)
 
 $(UTILS_DIR)/%: utils/%.c $(DBG_OBJ) | $(UTILS_DIR) debug
-	$(CC) $(DBG_CFLAGS) $(LDFLAGS) -o $@ $< $(DBG_OBJ)
+	$(CC) $(DBG_CFLAGS) -o $@ $< $(DBG_OBJ) $(LDFLAGS)
 
 $(DEMO_SH): utils/demo.sh | $(UTILS_DIR)
 	cp utils/demo.sh $@
@@ -76,11 +76,11 @@ $(DEMO_SH): utils/demo.sh | $(UTILS_DIR)
 
 release: $(REL_DIR) $(REL_OBJ) $(REL_MAIN)
 	@echo "Linking $(PROJECT) release $(VERSION)..."
-	$(CC) $(REL_CFLAGS) $(LDFLAGS) -o $(BUILD)/$(PROJECT) $(REL_OBJ) $(REL_MAIN)
+	$(CC) $(REL_CFLAGS) -o $(BUILD)/$(PROJECT) $(REL_OBJ) $(REL_MAIN) $(LDFLAGS)
 
 debug: $(DBG_DIR) $(DBG_OBJ) $(DBG_MAIN)
 	@echo "Linking $(PROJECT) debug $(VERSION)..."
-	$(CC) $(DBG_CFLAGS) $(LDFLAGS) -o $(BUILD)/$(PROJECT)-debug $(DBG_OBJ) $(DBG_MAIN)
+	$(CC) $(DBG_CFLAGS) -o $(BUILD)/$(PROJECT)-debug $(DBG_OBJ) $(DBG_MAIN) $(LDFLAGS)
 
 $(REL_DIR):
 	mkdir -p $(REL_DIR)
@@ -99,7 +99,7 @@ $(BUILD)/test_%.o: tests/test_%.c | $(DBG_DIR)
 	$(CC) $(DBG_CFLAGS) -fPIC -c $< -o $@
 
 $(BUILD)/test_%: $(BUILD)/test_%.o $(DBG_OBJ) | debug
-	$(CC) $(DBG_CFLAGS) $(LDFLAGS) -o $@ $< $(DBG_OBJ) -L/opt/homebrew/lib -lcmocka
+	$(CC) $(DBG_CFLAGS) -o $@ $< $(DBG_OBJ) $(LDFLAGS) -L/opt/homebrew/lib -lcmocka
 
 # Coverage objects (src/ and tests/ compiled with --coverage)
 $(COV_SRC_DIR):
@@ -115,7 +115,7 @@ $(COV_TST_DIR)/%.o: tests/test_%.c | $(COV_TST_DIR)
 	$(CC) $(COV_CFLAGS) -fPIC -c $< -o $@
 
 $(BUILD)/cov/test_%: $(COV_TST_DIR)/%.o $(COV_SRC_OBJ)
-	$(CC) $(COV_CFLAGS) $(LDFLAGS) --coverage -o $@ $< $(COV_SRC_OBJ) -L/opt/homebrew/lib -lcmocka
+	$(CC) $(COV_CFLAGS) --coverage -o $@ $< $(COV_SRC_OBJ) $(LDFLAGS) -L/opt/homebrew/lib -lcmocka
 
 # ── test ────────────────────────────────────────────────────────────────────
 #
