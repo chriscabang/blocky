@@ -6,17 +6,20 @@ on:
   pull_request:
     branches: [develop, main]
 
-# ── liboqs cache key ────────────────────────────────────────────────────────
-# Shared across all three jobs. Bump the suffix (v1 → v2) to force a full
-# liboqs rebuild (e.g. after a major upstream change).
+# liboqs is cloned inside the workspace at libs/liboqs so that
+# actions/cache can manage it with a simple relative path.
+# The Makefile default is ../libs, so we pass LIBS=$(pwd)/libs on
+# every make invocation to override it without touching the Makefile.
+#
+# Bump LIBOQS_KEY (v1 → v2) to force a full liboqs rebuild.
 env:
-  LIBOQS_CACHE_KEY: liboqs-main-${{ runner.os }}-v1
-  LIBOQS_PATH:      ${{ github.workspace }}/../libs/liboqs
+  LIBOQS_KEY: liboqs-main-ubuntu-v1
+  LIBOQS_DIR: libs/liboqs
 
 jobs:
 
   # ── 1. deps ───────────────────────────────────────────────────────────────
-  # Clones and builds liboqs once, then saves it to the Actions cache so the
+  # Clones and builds liboqs, then saves it to the Actions cache so the
   # build and check jobs can restore it without recompiling from scratch.
   deps:
     runs-on: ubuntu-latest
@@ -30,23 +33,23 @@ jobs:
         id: cache-liboqs
         uses: actions/cache@v4
         with:
-          path: ${{ env.LIBOQS_PATH }}
-          key:  ${{ env.LIBOQS_CACHE_KEY }}
+          path: ${{ env.LIBOQS_DIR }}
+          key:  ${{ env.LIBOQS_KEY }}
 
       - name: Clone and build liboqs
         if: steps.cache-liboqs.outputs.cache-hit != 'true'
         run: |
-          mkdir -p "${{ env.LIBOQS_PATH }}/.."
+          mkdir -p "${{ env.LIBOQS_DIR }}"
           git clone --depth 1 \
             https://github.com/open-quantum-safe/liboqs.git \
-            "${{ env.LIBOQS_PATH }}"
+            "${{ env.LIBOQS_DIR }}"
           cmake -GNinja \
             -DOQS_BUILD_ONLY_LIB=ON \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
-            -S "${{ env.LIBOQS_PATH }}" \
-            -B "${{ env.LIBOQS_PATH }}/build"
-          ninja -C "${{ env.LIBOQS_PATH }}/build"
+            -S "${{ env.LIBOQS_DIR }}" \
+            -B "${{ env.LIBOQS_DIR }}/build"
+          ninja -C "${{ env.LIBOQS_DIR }}/build"
 
   # ── 2. build ──────────────────────────────────────────────────────────────
   # Compiles all zuno targets (release, debug, utils, test binaries) and
@@ -66,26 +69,26 @@ jobs:
         id: cache-liboqs
         uses: actions/cache@v4
         with:
-          path: ${{ env.LIBOQS_PATH }}
-          key:  ${{ env.LIBOQS_CACHE_KEY }}
+          path: ${{ env.LIBOQS_DIR }}
+          key:  ${{ env.LIBOQS_KEY }}
 
       - name: Build liboqs (fallback on cache miss)
         if: steps.cache-liboqs.outputs.cache-hit != 'true'
         run: |
-          mkdir -p "${{ env.LIBOQS_PATH }}/.."
+          mkdir -p "${{ env.LIBOQS_DIR }}"
           git clone --depth 1 \
             https://github.com/open-quantum-safe/liboqs.git \
-            "${{ env.LIBOQS_PATH }}"
+            "${{ env.LIBOQS_DIR }}"
           cmake -GNinja \
             -DOQS_BUILD_ONLY_LIB=ON \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
-            -S "${{ env.LIBOQS_PATH }}" \
-            -B "${{ env.LIBOQS_PATH }}/build"
-          ninja -C "${{ env.LIBOQS_PATH }}/build"
+            -S "${{ env.LIBOQS_DIR }}" \
+            -B "${{ env.LIBOQS_DIR }}/build"
+          ninja -C "${{ env.LIBOQS_DIR }}/build"
 
       - name: Build (release + debug + utils + test binaries)
-        run: make all test_bins
+        run: make all test_bins LIBS="$(pwd)/libs"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -112,23 +115,23 @@ jobs:
         id: cache-liboqs
         uses: actions/cache@v4
         with:
-          path: ${{ env.LIBOQS_PATH }}
-          key:  ${{ env.LIBOQS_CACHE_KEY }}
+          path: ${{ env.LIBOQS_DIR }}
+          key:  ${{ env.LIBOQS_KEY }}
 
       - name: Build liboqs (fallback on cache miss)
         if: steps.cache-liboqs.outputs.cache-hit != 'true'
         run: |
-          mkdir -p "${{ env.LIBOQS_PATH }}/.."
+          mkdir -p "${{ env.LIBOQS_DIR }}"
           git clone --depth 1 \
             https://github.com/open-quantum-safe/liboqs.git \
-            "${{ env.LIBOQS_PATH }}"
+            "${{ env.LIBOQS_DIR }}"
           cmake -GNinja \
             -DOQS_BUILD_ONLY_LIB=ON \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
-            -S "${{ env.LIBOQS_PATH }}" \
-            -B "${{ env.LIBOQS_PATH }}/build"
-          ninja -C "${{ env.LIBOQS_PATH }}/build"
+            -S "${{ env.LIBOQS_DIR }}" \
+            -B "${{ env.LIBOQS_DIR }}/build"
+          ninja -C "${{ env.LIBOQS_DIR }}/build"
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -142,10 +145,10 @@ jobs:
           chmod +x build/test_* build/utils/* build/zuno build/zuno-debug 2>/dev/null || true
 
       - name: Run test suite
-        run: make test
+        run: make test LIBS="$(pwd)/libs"
 
       - name: Run coverage
-        run: make coverage
+        run: make coverage LIBS="$(pwd)/libs"
 
       - name: Upload coverage report
         if: always()
