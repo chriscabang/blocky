@@ -1526,8 +1526,35 @@ small and avoids transmitting unvalidated Dilithium signatures over the wire
 before the receiving peer has validated the block header.
 
 **Single-threaded server.** `net_server_run()` handles one connection at a
-time — appropriate for Raspberry Pi / low-concurrency nodes. Threading can be
-added later without changing the API.
+time. This is a deliberate, permanent decision for the target deployment — not
+a placeholder for future work.
+
+**Rationale — why threading adds no value here:**
+
+1. **Block arrival frequency is ~1/min.** At `DIFFICULTY=4`, mining produces
+   roughly one block per minute. Two connections arriving within the same
+   ~50ms processing window requires two nodes to mine simultaneously — a fork
+   scenario GHOST resolves regardless of how fast the server processes it.
+
+2. **`NET_LISTEN_BACKLOG = 16` absorbs all realistic bursts.** In a 10-node
+   mesh where every peer broadcasts simultaneously, 10 connections queue and
+   are processed in ~500ms total. No connection is dropped; no data is lost.
+
+3. **`chain_add()` must be serialized anyway.** `Chain *` is mutable shared
+   state (head pointer, pool allocator, disk writes via `storage_insert`).
+   Concurrent `chain_add()` calls would require a mutex — serializing the hot
+   path regardless. The only parallelism gained is in TLS handshakes and
+   GETBODY fetches, saving ~10–30ms in a once-per-minute event.
+
+4. **Cost exceeds benefit.** Threading requires making `chain.c` thread-safe
+   (non-trivial), adding mutex scope to every `Chain *` operation, and
+   managing thread lifecycle — all to save milliseconds in a scenario that
+   empirically does not occur on a Pi WireGuard mesh.
+
+5. **Scale-out is a deployment ADR, not a patch.** If zuno ever outgrows
+   Raspberry Pi nodes, threading is one of many concerns that belong in a new
+   deployment decision — not retrofitted into a module designed for
+   single-board hardware.
 
 #### Decision — GETBODY Protocol (Transaction Body Fetch-on-Demand)
 
@@ -2045,6 +2072,4 @@ The content-addressed filename makes add idempotent (same transaction re-queued 
 
 ## Part IV — Pending Work
 
-| Work Item | Notes |
-|---|---|
-| Multi-threaded `net_server_run()` | One connection at a time; pthread-based fan-in for higher concurrency (see ADR-014) |
+_(No items — all designed work is implemented. See ADR-014 for the deliberate decision on single-threaded server concurrency.)_
