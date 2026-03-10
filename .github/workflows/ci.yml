@@ -299,19 +299,25 @@ jobs:
               echo ""
               echo "| File | Lines | Functions |"
               echo "|------|------:|----------:|"
-              lcov --list "$INFO" 2>/dev/null | \
-                awk -F'[|]' '
-                  /src\/[a-z_]+\.c/ {
-                    fname = $1
-                    sub(/^[[:blank:]]+/, "", fname)
-                    sub(/[[:blank:]]+$/, "", fname)
-                    match($2, /[0-9]+\.[0-9]+%/)
-                    lrate = (RSTART > 0) ? substr($2, RSTART, RLENGTH) : "-"
-                    match($3, /[0-9]+\.[0-9]+%/)
-                    frate = (RSTART > 0) ? substr($3, RSTART, RLENGTH) : "-"
-                    printf "| `%s` | %s | %s |\n", fname, lrate, frate
+              awk '
+                /^SF:/ {
+                  f = substr($0, 4)
+                  if (match(f, /src\/[a-z_]+\.c$/)) { file = substr(f, RSTART, RLENGTH) }
+                  else { file = "" }
+                }
+                /^LH:/ { lh = substr($0, 4) + 0 }
+                /^LF:/ { lf = substr($0, 4) + 0 }
+                /^FNH:/ { fnh = substr($0, 5) + 0 }
+                /^FNF:/ { fnf = substr($0, 5) + 0 }
+                /^end_of_record/ {
+                  if (file != "" && lf > 0) {
+                    lrate = sprintf("%.1f%%", lh / lf * 100)
+                    frate = (fnf > 0) ? sprintf("%.1f%%", fnh / fnf * 100) : "-"
+                    printf "| \`%s\` | %s | %s |\n", file, lrate, frate
                   }
-                '
+                  file = ""; lh = 0; lf = 0; fnh = 0; fnf = 0
+                }
+              ' "$INFO"
 
               echo ""
               echo "<details><summary>Full lcov summary</summary>"
