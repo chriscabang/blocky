@@ -55,6 +55,27 @@ jobs:
             -B "${{ env.LIBOQS_DIR }}/build"
           ninja -C "${{ env.LIBOQS_DIR }}/build"
 
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Dependencies"
+            echo ""
+            echo "| Tool  | Version |"
+            echo "|-------|---------|"
+            printf "| cmake | \`%s\` |\n" "$(cmake --version | head -1 | awk '{print $3}')"
+            printf "| ninja | \`%s\` |\n" "$(ninja --version)"
+            printf "| gcc   | \`%s\` |\n" "$(gcc --version | head -1 | awk '{print $NF}')"
+            echo ""
+            printf "**liboqs commit:** \`%s\`\n" "${{ env.LIBOQS_COMMIT }}"
+            echo ""
+            if [ "${{ steps.cache-liboqs.outputs.cache-hit }}" = "true" ]; then
+              printf "**liboqs:** ✅ restored from cache (\`%s\`)\n" "${{ env.LIBOQS_KEY }}"
+            else
+              echo "**liboqs:** 🔨 built from source and saved to cache"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # ── 2. build ──────────────────────────────────────────────────────────────
   # Compiles all zuno targets (release, debug, utils, test binaries) and
   # uploads the build directory as an artifact for the check job.
@@ -92,7 +113,48 @@ jobs:
           ninja -C "${{ env.LIBOQS_DIR }}/build"
 
       - name: Build (release + debug + utils + test binaries)
-        run: make all test_bins LIBS="$(pwd)/libs" MARCH=
+        run: |
+          make all test_bins LIBS="$(pwd)/libs" MARCH= 2>&1 | tee /tmp/build-output.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo "## Build"
+            echo ""
+            echo "### Installed packages"
+            echo ""
+            echo "| Package    | Version |"
+            echo "|------------|---------|"
+            printf "| gcc        | \`%s\` |\n" "$(gcc --version | head -1 | awk '{print $NF}')"
+            printf "| libssl-dev | \`%s\` |\n" \
+              "$(dpkg -s libssl-dev 2>/dev/null | awk '/^Version/{print $2}')"
+            printf "| libcmocka  | \`%s\` |\n" \
+              "$(dpkg -s libcmocka-dev 2>/dev/null | awk '/^Version/{print $2}')"
+            echo ""
+            echo "### Result"
+            echo ""
+            if [ -f build/zuno ] && [ -f build/zuno-debug ]; then
+              echo "✅ **Build succeeded**"
+              echo ""
+              echo "| Binary | Size |"
+              echo "|--------|------|"
+              for bin in build/zuno build/zuno-debug; do
+                [ -f "$bin" ] && printf "| \`%s\` | %s |\n" "$bin" "$(du -h "$bin" | awk '{print $1}')"
+              done
+            else
+              echo "❌ **Build failed**"
+              echo ""
+              echo "<details><summary>Compiler output (last 60 lines)</summary>"
+              echo ""
+              echo '```'
+              tail -60 /tmp/build-output.txt 2>/dev/null
+              echo '```'
+              echo ""
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -149,10 +211,97 @@ jobs:
           chmod +x build/test_* build/utils/* build/zuno build/zuno-debug 2>/dev/null || true
 
       - name: Run test suite
-        run: make test LIBS="$(pwd)/libs" MARCH=
+        run: |
+          make test LIBS="$(pwd)/libs" MARCH= 2>&1 | tee /tmp/test-output.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Test summary
+        if: always()
+        run: |
+          {
+            echo "## Test Results"
+            echo ""
+
+            if [ ! -f /tmp/test-output.txt ]; then
+              echo "⚠️ No test output found — test step may not have run."
+            else
+              TOTAL_LINE=$(grep "^  TOTAL" /tmp/test-output.txt || true)
+              PASSED=$(echo "$TOTAL_LINE" | awk '{print $2}')
+              FAILED=$(echo "$TOTAL_LINE" | awk '{print $3}')
+              TOTAL=$(echo  "$TOTAL_LINE" | awk '{print $4}')
+
+              if grep -q "All .* tests passed" /tmp/test-output.txt; then
+                printf "✅ **All %s tests passed**\n" "$TOTAL"
+              else
+                printf "❌ **%s of %s tests failed**\n" "$FAILED" "$TOTAL"
+              fi
+
+              echo ""
+              echo "| Suite | Passed | Failed | Total |"
+              echo "|-------|-------:|-------:|------:|"
+              grep -E "^  test_" /tmp/test-output.txt | \
+                awk '{
+                  status = ($3 == "0") ? "✅" : "❌"
+                  printf "| %s `%s` | %s | %s | %s |\n", status, $1, $2, $3, $4
+                }'
+              printf "| **TOTAL** | **%s** | **%s** | **%s** |\n" \
+                "$PASSED" "$FAILED" "$TOTAL"
+
+              if ! grep -q "All .* tests passed" /tmp/test-output.txt; then
+                echo ""
+                echo "<details><summary>Failure details</summary>"
+                echo ""
+                echo '```'
+                grep -E "\[  FAILED  \]|FAILED\b" /tmp/test-output.txt | head -50
+                echo '```'
+                echo ""
+                echo "</details>"
+              fi
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run coverage
-        run: make coverage LIBS="$(pwd)/libs" MARCH=
+        run: |
+          make coverage LIBS="$(pwd)/libs" MARCH= 2>&1 | tee /tmp/coverage-output.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          {
+            echo "## Coverage"
+            echo ""
+
+            INFO=build/cov/coverage.info
+            if [ -f "$INFO" ]; then
+              LCOV_OUT=$(lcov --summary "$INFO" 2>&1)
+              LINE_COV=$(echo "$LCOV_OUT" | awk '/lines\.\.\.\.\.\.:/{print $2}')
+              FUNC_COV=$(echo "$LCOV_OUT" | awk '/functions\.\.:/{print $2}')
+
+              echo "| Metric    | Coverage |"
+              echo "|-----------|:--------:|"
+              printf "| Lines     | **%s** |\n" "$LINE_COV"
+              printf "| Functions | **%s** |\n" "$FUNC_COV"
+              echo ""
+              echo "<details><summary>Full lcov summary</summary>"
+              echo ""
+              echo '```'
+              echo "$LCOV_OUT"
+              echo '```'
+              echo ""
+              echo "</details>"
+            else
+              echo "⚠️ Coverage data not available (build/cov/coverage.info missing)"
+              echo ""
+              echo "<details><summary>Coverage build output</summary>"
+              echo ""
+              echo '```'
+              tail -40 /tmp/coverage-output.txt 2>/dev/null
+              echo '```'
+              echo ""
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage report
         if: always()
