@@ -114,8 +114,11 @@ jobs:
 
       - name: Build (release + debug + utils + test binaries)
         run: |
+          _t0=$(date +%s)
           make all test_bins LIBS="$(pwd)/libs" MARCH= 2>&1 | tee /tmp/build-output.txt
-          exit ${PIPESTATUS[0]}
+          _rc=${PIPESTATUS[0]}
+          printf '%d\n' "$(($(date +%s) - _t0))" > /tmp/build-secs.txt
+          exit $_rc
 
       - name: Build summary
         if: always()
@@ -135,16 +138,18 @@ jobs:
             echo ""
             echo "### Result"
             echo ""
+            BUILD_SECS=$(cat /tmp/build-secs.txt 2>/dev/null || echo '?')
             if [ -f build/zuno ] && [ -f build/zuno-debug ]; then
-              echo "✅ **Build succeeded**"
+              printf "✅ **Build succeeded** in **%ss**\n" "$BUILD_SECS"
               echo ""
               echo "| Binary | Size |"
               echo "|--------|------|"
               for bin in build/zuno build/zuno-debug; do
-                [ -f "$bin" ] && printf "| \`%s\` | %s |\n" "$bin" "$(du -h "$bin" | awk '{print $1}')"
+                [ -f "$bin" ] && printf "| \`%s\` | %s |\n" \
+                  "$bin" "$(du -h "$bin" | awk '{print $1}')"
               done
             else
-              echo "❌ **Build failed**"
+              printf "❌ **Build failed** after **%ss**\n" "$BUILD_SECS"
               echo ""
               echo "<details><summary>Compiler output (last 60 lines)</summary>"
               echo ""
@@ -212,8 +217,11 @@ jobs:
 
       - name: Run test suite
         run: |
+          _t0=$(date +%s)
           make test LIBS="$(pwd)/libs" MARCH= 2>&1 | tee /tmp/test-output.txt
-          exit ${PIPESTATUS[0]}
+          _rc=${PIPESTATUS[0]}
+          printf '%d\n' "$(($(date +%s) - _t0))" > /tmp/test-secs.txt
+          exit $_rc
 
       - name: Test summary
         if: always()
@@ -229,11 +237,12 @@ jobs:
               PASSED=$(echo "$TOTAL_LINE" | awk '{print $2}')
               FAILED=$(echo "$TOTAL_LINE" | awk '{print $3}')
               TOTAL=$(echo  "$TOTAL_LINE" | awk '{print $4}')
+              TEST_SECS=$(cat /tmp/test-secs.txt 2>/dev/null || echo '?')
 
               if grep -q "All .* tests passed" /tmp/test-output.txt; then
-                printf "✅ **All %s tests passed**\n" "$TOTAL"
+                printf "✅ **All %s tests passed** in **%ss**\n" "$TOTAL" "$TEST_SECS"
               else
-                printf "❌ **%s of %s tests failed**\n" "$FAILED" "$TOTAL"
+                printf "❌ **%s of %s tests failed** (%ss)\n" "$FAILED" "$TOTAL" "$TEST_SECS"
               fi
 
               echo ""
@@ -278,10 +287,32 @@ jobs:
               LINE_COV=$(echo "$LCOV_OUT" | awk '/lines\.\.\.\.\.\.:/{print $2}')
               FUNC_COV=$(echo "$LCOV_OUT" | awk '/functions\.\.:/{print $2}')
 
+              echo "### Summary"
+              echo ""
               echo "| Metric    | Coverage |"
               echo "|-----------|:--------:|"
               printf "| Lines     | **%s** |\n" "$LINE_COV"
               printf "| Functions | **%s** |\n" "$FUNC_COV"
+
+              echo ""
+              echo "### Per-file (src/)"
+              echo ""
+              echo "| File | Lines | Functions |"
+              echo "|------|------:|----------:|"
+              lcov --list "$INFO" 2>/dev/null | \
+                awk -F'[|]' '
+                  /src\/[a-z_]+\.c/ {
+                    fname = $1
+                    sub(/^[[:blank:]]+/, "", fname)
+                    sub(/[[:blank:]]+$/, "", fname)
+                    match($2, /[0-9]+\.[0-9]+%/)
+                    lrate = (RSTART > 0) ? substr($2, RSTART, RLENGTH) : "-"
+                    match($3, /[0-9]+\.[0-9]+%/)
+                    frate = (RSTART > 0) ? substr($3, RSTART, RLENGTH) : "-"
+                    printf "| `%s` | %s | %s |\n", fname, lrate, frate
+                  }
+                '
+
               echo ""
               echo "<details><summary>Full lcov summary</summary>"
               echo ""
