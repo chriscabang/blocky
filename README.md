@@ -128,9 +128,3 @@ zuno/
 ├── slots/            — equivocation guard (one file per PoS proposer)
 └── validators/       — validator registry (one binary file per validator)
 ```
-
----
-
-## License
-
-See `LICENSE.md`.
